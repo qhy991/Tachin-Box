@@ -174,12 +174,12 @@ class BoxGameRenderer(FigureCanvas):
         self.heatmap_view_mode = '3d'  # '2d' 或 '3d'
         
         # 🎨 3D渲染增强参数
-        self.enable_3d_lighting = True  # 启用3D光照效果
+        self.enable_3d_lighting = True  # 启用3D光照
         self.enable_3d_shadows = True   # 启用3D阴影
-        self.enable_3d_animation = True # 启用3D动画
-        self.elevation_3d = 30          # 3D视角仰角
-        self.azimuth_3d = 45            # 3D视角方位角
-        self.rotation_speed_3d = 0.5    # 3D旋转速度
+        self.enable_3d_animation = False # 禁用3D动画旋转
+        self.elevation_3d = 45          # 3D视角仰角 - 固定45度
+        self.azimuth_3d = 315            # 3D视角方位角 - 修正为315度（-45度）
+        self.rotation_speed_3d = 0.0    # 3D旋转速度 - 设为0禁用旋转
         self.surface_alpha_3d = 0.8     # 3D表面透明度
         self.wireframe_alpha_3d = 0.3   # 3D线框透明度
         self.enable_wireframe = True    # 默认启动网格
@@ -195,6 +195,19 @@ class BoxGameRenderer(FigureCanvas):
         self.enable_bloom_effect = False       # 启用泛光效果
         self.enable_depth_of_field = False     # 启用景深效果
         self.enable_motion_blur = False        # 启用运动模糊
+        
+        # 🚀 性能优化相关变量
+        self.performance_mode = "高性能"         # 当前性能模式
+        self.pressure_data_changed = False     # 压力数据变化标志
+        self.game_state_changed = False        # 游戏状态变化标志
+        self.render_start_time = 0             # 渲染开始时间
+        self.last_render_time = 0              # 上次渲染时间
+        self.render_time_history = deque(maxlen=10)  # 渲染时间历史
+        
+        # 🎯 3D渲染缓存
+        self._3d_surface = None                # 3D表面缓存
+        self._pressure_data_changed = False    # 压力数据变化标志
+        self._preprocessed_cache = None        # 预处理缓存
         
         # 🎨 子图配置
         self.setup_subplots()
@@ -346,104 +359,64 @@ class BoxGameRenderer(FigureCanvas):
         print(f"�� 界面布局已更新为2:3比例布局")
     
     def update_game_state(self, state_info: Dict):
-        try:
-            # 🎮 更新游戏状态
-            self.is_contact = state_info.get('is_contact', False)
-            self.is_tangential = state_info.get('is_tangential', False)
-            self.is_sliding = state_info.get('is_sliding', False)
-            
-            # 📍 更新位置信息
-            self.current_cop = state_info.get('current_cop')
-            self.initial_cop = state_info.get('initial_cop')
-            self.movement_distance = state_info.get('movement_distance', 0.0)
-            
-            # 🎯 更新分析结果
-            self.consensus_angle = state_info.get('consensus_angle')
-            self.consensus_confidence = state_info.get('consensus_confidence', 0.0)
-            
-            # 🎮 更新控制模式信息
-            self.current_control_mode = state_info.get('control_mode', 'idle')
-            new_system_mode = state_info.get('system_mode', 'touchpad_only')
-            
-            # 📏 更新阈值信息
-            self.joystick_threshold = state_info.get('joystick_threshold', 0.05)  # 更新默认值
-            self.touchpad_threshold = state_info.get('touchpad_threshold', 10)  # 更新默认值
-            
-            # 🆕 更新idle分析结果
-            self.idle_analysis = state_info.get('idle_analysis')
-            
-            # 🔄 检查系统模式是否发生变化
-            if new_system_mode != self.current_system_mode:
-                self.current_system_mode = new_system_mode
-                self.update_interface_layout(new_system_mode)
-            
-            # 📦 更新箱子位置
-            box_pos = state_info.get('box_position')
-            box_target = state_info.get('box_target_position')
-            if box_pos is not None:
-                if hasattr(box_pos, 'copy'):
-                    self.box_position = box_pos.copy()
-                else:
-                    self.box_position = np.array(box_pos)
-            if box_target is not None:
-                if hasattr(box_target, 'copy'):
-                    self.box_target_position = box_target.copy()
-                else:
-                    self.box_target_position = np.array(box_target)
-            
-            # 📈 更新轨迹历史
-            if self.current_cop is not None:
-                self.cop_history.append(np.array(self.current_cop))
-            
-            if self.consensus_angle is not None:
-                self.angle_history.append(self.consensus_angle)
-            
-            # 🆕 idle状态下清空分析数据
-            if self.current_control_mode == 'idle':
-                self.consensus_angle = None
-                self.consensus_confidence = 0.0
-                self.analysis_results = None
-                
-                # 🔄 增加idle帧计数器
-                self.idle_frame_count += 1
-                
-                # 🗺️ 检查是否需要清除COP轨迹历史
-                if self.idle_frame_count >= self.max_idle_frames:
-                    print(f"🧹 连续{self.max_idle_frames}帧idle，清除COP轨迹历史")
-                    self.cop_history.clear()  # 清除COP轨迹历史
-                    self.angle_history.clear()  # 清除角度历史
-                    self.idle_frame_count = 0  # 重置计数器
-            else:
-                # 🔄 非idle状态，重置计数器
-                self.idle_frame_count = 0
-        except Exception as e:
-            print(f"⚠️ 更新游戏状态时出错: {e}")
+        """更新游戏状态"""
+        # 更新基本状态
+        if 'box_position' in state_info:
+            self.box_position = np.array(state_info['box_position'])
+        if 'box_target_position' in state_info:
+            self.box_target_position = np.array(state_info['box_target_position'])
+        if 'current_cop' in state_info:
+            self.current_cop = state_info['current_cop']
+        if 'initial_cop' in state_info:
+            self.initial_cop = state_info['initial_cop']
+        if 'movement_distance' in state_info:
+            self.movement_distance = state_info['movement_distance']
+        if 'is_contact' in state_info:
+            self.is_contact = state_info['is_contact']
+        if 'is_tangential' in state_info:
+            self.is_tangential = state_info['is_tangential']
+        if 'is_sliding' in state_info:
+            self.is_sliding = state_info['is_sliding']
+        if 'consensus_angle' in state_info:
+            self.consensus_angle = state_info['consensus_angle']
+        if 'consensus_confidence' in state_info:
+            self.consensus_confidence = state_info['consensus_confidence']
+        if 'control_mode' in state_info:
+            self.current_control_mode = state_info['control_mode']
+        if 'current_system_mode' in state_info:
+            self.current_system_mode = state_info['current_system_mode']
+        
+        # 🚀 设置游戏状态变化标志
+        self.game_state_changed = True
+        
+        # 更新COP历史
+        if self.current_cop is not None:
+            self.cop_history.append(self.current_cop)
+        
+        # 更新角度历史
+        if self.consensus_angle is not None:
+            self.angle_history.append(self.consensus_angle)
+        
+        # 检查目标达成
+        self.check_target_reached()
     
     def update_pressure_data(self, pressure_data: np.ndarray):
         """更新压力数据"""
-        if pressure_data is not None and pressure_data.size > 0:
+        if pressure_data is not None:
             self.pressure_data = pressure_data.copy()
-            # print(f"🔥 渲染器收到压力数据: 形状={self.pressure_data.shape}, 最大值={np.max(self.pressure_data):.4f}")
-        else:
-            self.pressure_data = None
-            print("⚠️ 渲染器收到空压力数据")
+            self.pressure_data_changed = True  # 🚀 设置变化标志
+            self._pressure_data_changed = True  # 🎯 设置3D缓存变化标志
     
     def update_consensus_angle(self, angle: float, confidence: float):
         """更新共识角度"""
         self.consensus_angle = angle
         self.consensus_confidence = confidence
-        print(f"🧭 渲染器收到共识角度: {angle:.1f}°, 置信度: {confidence:.2f}")
+        self.game_state_changed = True  # 🚀 设置变化标志
     
     def update_analysis_results(self, analysis_results: Dict):
-        """更新分析结果 - 简化版：只记录，不显示"""
+        """更新分析结果"""
         self.analysis_results = analysis_results
-        # 🎯 简化：不再显示分析结果调试信息，专注于COP显示
-        # print('[调试] analysis_results:', self.analysis_results)  # 注释掉调试输出
-        
-        # 从分析结果中提取额外信息
-        if analysis_results:
-            # 可以从这里提取更多有用的可视化信息
-            pass
+        self.game_state_changed = True  # 🚀 设置变化标志
     
     def update_navigation_info(self, nav_info: Dict):
         print("收到导航信息：", nav_info)
@@ -457,10 +430,64 @@ class BoxGameRenderer(FigureCanvas):
             print("⚠️ 路径规划模块不可用")
     
     def update_display(self):
-        """更新显示内容"""
+        """更新显示内容 - 优化版"""
         try:
-            # 🧹 清空所有子图
-            self.clear_all_plots()
+            # 🚀 记录渲染开始时间
+            self.render_start_time = time.time()
+            
+            # 🎯 增量渲染：只在必要时更新
+            if self.pressure_data_changed:
+                self.update_pressure_only()
+                self.pressure_data_changed = False
+            
+            if self.game_state_changed:
+                self.update_game_area_only()
+                self.game_state_changed = False
+            
+            # 🎨 应用子图属性
+            self.setup_subplot_properties()
+            
+            # 🔄 使用轻量级画布更新
+            self.draw_idle()
+            
+            # 📊 更新帧率统计
+            self.update_frame_rate_stats()
+            
+            # 🚀 性能监控
+            self.monitor_render_performance()
+            
+        except Exception as e:
+            print(f"⚠️ 渲染更新时出错: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def update_pressure_only(self):
+        """只更新压力分布图"""
+        if self.pressure_data is None:
+            return
+        
+        try:
+            # 预处理数据
+            processed_data = self.preprocess_pressure_data_optimized(self.pressure_data)
+            if processed_data is None:
+                return
+            
+            display_data = processed_data['data']
+            
+            # 根据模式选择渲染方式
+            if self.heatmap_view_mode == '3d':
+                self.render_3d_heatmap_optimized(display_data)
+            else:
+                self.render_2d_heatmap_optimized(display_data)
+            
+        except Exception as e:
+            print(f"❌ 压力分布更新失败: {e}")
+    
+    def update_game_area_only(self):
+        """只更新游戏区域"""
+        try:
+            # 🧹 只清空游戏区域
+            self.ax_game.clear()
             
             # 🎮 渲染游戏区域
             self.render_game_area()
@@ -478,22 +505,99 @@ class BoxGameRenderer(FigureCanvas):
             # 📊 渲染状态文本
             self.render_status_text()
             
-            # 🔥 渲染压力分布
-            self.render_pressure_distribution()
+        except Exception as e:
+            print(f"❌ 游戏区域更新失败: {e}")
+    
+    def monitor_render_performance(self):
+        """监控渲染性能"""
+        render_time = time.time() - self.render_start_time
+        self.render_time_history.append(render_time)
+        
+        # 计算平均渲染时间
+        avg_render_time = np.mean(self.render_time_history)
+        
+        # 性能警告
+        if render_time > 0.033:  # 超过33ms (30 FPS)
+            print(f"⚠️ 渲染性能警告: {render_time*1000:.1f}ms")
+        
+        # 自适应性能调整
+        if len(self.render_time_history) >= 5:
+            if avg_render_time > 0.05:  # 平均超过50ms
+                self.adaptive_performance_adjustment()
+    
+    def adaptive_performance_adjustment(self):
+        """自适应性能调整 - 简化版本"""
+        # 简化性能调整逻辑，默认使用高性能模式
+        # 不再进行自动性能调整以保持稳定性
+        pass
+    
+    def set_performance_mode(self, mode):
+        """设置性能模式 - 增加稳定性控制"""
+        if mode in ["低性能", "标准", "高性能", "极限"]:
+            # 记录之前的模式
+            previous_mode = self.performance_mode
             
-            # 🎨 应用子图属性
-            self.setup_subplot_properties()
+            # 更新模式
+            self.performance_mode = mode
             
-            # 🔄 更新画布
-            self.draw()
+            # 如果模式发生变化，强制重新创建3D表面并提示用户
+            if previous_mode != mode:
+                self._pressure_data_changed = True
+                print(f"🔄 性能模式已切换: {previous_mode} → {mode}")
+                print(f"💡 提示：颜色和网格效果可能会发生变化")
+                print(f"💡 建议：如需稳定效果，请在控制面板中手动选择性能模式")
             
-            # 📊 更新帧率统计
-            self.update_frame_rate_stats()
+            print(f"🎯 渲染器性能模式已设置为: {mode}")
+            self.update_frame_rate()
+        else:
+            print(f"❌ 无效的性能模式: {mode}")
+    
+    def preprocess_pressure_data_optimized(self, pressure_data):
+        """优化的数据预处理 - 带缓存"""
+        if pressure_data is None:
+            return None
+        
+        try:
+            # 生成数据哈希值
+            data_hash = hash(pressure_data.tobytes())
+            
+            # 检查缓存
+            if (self._preprocessed_cache and 
+                self._preprocessed_cache.get('hash') == data_hash):
+                return self._preprocessed_cache['result']
+            
+            # 根据性能模式调整预处理
+            if self.performance_mode == "低性能":
+                # 最小预处理
+                result = {
+                    'data': pressure_data,
+                    'colormap': 'hot'
+                }
+            elif self.performance_mode == "标准":
+                # 基本预处理
+                if self.use_gaussian_blur:
+                    data = self.gaussian_blur(pressure_data, sigma=0.5)  # 降低模糊强度
+                else:
+                    data = pressure_data
+                result = {
+                    'data': data,
+                    'colormap': self.get_custom_colormap()
+                }
+            else:
+                # 完整预处理
+                result = self.preprocess_pressure_data(pressure_data)
+            
+            # 缓存结果
+            self._preprocessed_cache = {
+                'hash': data_hash,
+                'result': result
+            }
+            
+            return result
             
         except Exception as e:
-            print(f"⚠️ 渲染更新时出错: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ 数据预处理失败: {e}")
+            return None
     
     def clear_all_plots(self):
         """清空所有子图"""
@@ -800,12 +904,33 @@ class BoxGameRenderer(FigureCanvas):
                                                color='red', alpha=0.8))
     
     def render_status_text(self):
-        """渲染状态文本 - 只显示实际渲染帧率"""
-        # 🎨 只显示实际渲染帧率
+        """渲染状态文本 - 显示控制模式和渲染帧率"""
+        # 🎮 显示控制模式
+        control_mode_text = ""
+        if hasattr(self, 'current_control_mode'):
+            if self.current_control_mode == 'joystick':
+                control_mode_text = "🕹️ 摇杆模式"
+            elif self.current_control_mode == 'touchpad':
+                control_mode_text = "🖱️ 触控板模式"
+            elif self.current_control_mode == 'idle':
+                control_mode_text = "⏸️ 空闲模式"
+            else:
+                control_mode_text = f"🎮 {self.current_control_mode}"
+        
+        # 🎨 显示渲染帧率
         fps_text = f"渲染帧率: {self.current_fps:.1f} FPS"
         
+        # 🖼️ 显示控制模式文本
+        if control_mode_text:
+            self.ax_game.text(2, 62, control_mode_text, 
+                             fontsize=12, color='white', fontweight='bold',
+                             verticalalignment='top',
+                             bbox=dict(boxstyle="round,pad=0.5", 
+                                      facecolor='black', alpha=0.8,
+                                      edgecolor='white', linewidth=1))
+        
         # 🖼️ 显示帧率文本
-        self.ax_game.text(2, 60, fps_text, 
+        self.ax_game.text(2, 58, fps_text, 
                          fontsize=12, color='white', fontweight='bold',
                          verticalalignment='top',
                          bbox=dict(boxstyle="round,pad=0.5", 
@@ -925,11 +1050,18 @@ class BoxGameRenderer(FigureCanvas):
         # 重置路径可视化
         self.path_manager.clear_path_visualization()
         
+        # 🎨 重置3D视角到固定45度
+        self.reset_3d_view_to_fixed_45()
+        
         print("🔄 可视化已重置")
     
     def set_visualization_options(self, options: Dict):
         """设置可视化选项"""
         try:
+            # 🚀 处理性能模式设置
+            if 'performance_mode' in options:
+                self.set_performance_mode(options['performance_mode'])
+            
             # 🆕 处理2D/3D热力图切换
             if 'toggle_heatmap_mode' in options:
                 self.toggle_heatmap_mode()
@@ -1242,120 +1374,166 @@ class BoxGameRenderer(FigureCanvas):
         if self.pressure_data is not None:
             self.render_pressure_distribution()
     
-    def render_3d_heatmap(self, pressure_data):
-        """渲染3D热力图 - 增强版，支持更多美观效果"""
+    def render_3d_heatmap_optimized(self, pressure_data):
+        """优化的3D热力图渲染 - 带缓存和性能模式控制"""
         try:
-            # 清除当前子图并重新创建3D子图
-            self.ax_pressure.remove()
-            from mpl_toolkits.mplot3d import Axes3D
-            # 🔄 修改为1行5列布局，压力分布占据3/5宽度
-            self.ax_pressure = self.fig.add_subplot(1, 5, (3, 5), projection='3d')
+            # 根据性能模式调整3D效果
+            render_options = self.get_3d_rendering_options_optimized()
             
-            # 创建网格
-            rows, cols = pressure_data.shape
-            x = np.arange(cols)
-            y = np.arange(rows)
-            X, Y = np.meshgrid(x, y)
-            
-            # 🎨 应用平滑处理
-            smoothed_data = self.apply_3d_smoothing(pressure_data)
-            
-            # 🎨 创建增强的颜色映射
-            enhanced_colormap = self.create_enhanced_colormap()
-            
-            # 🎨 获取当前设置的颜色范围
-            vmin, vmax = self.y_lim
-            
-            # 绘制3D表面 - 增强版，使用设置的颜色范围
-            surf = self.ax_pressure.plot_surface(
-                X, Y, smoothed_data, 
-                cmap=enhanced_colormap,
-                alpha=self.surface_alpha_3d,
-                linewidth=0,
-                antialiased=self.enable_anti_aliasing,
-                vmin=vmin,  # 使用设置的颜色范围
-                vmax=vmax,
-                shade=self.enable_3d_shadows,  # 启用阴影
-                lightsource=None if not self.enable_3d_lighting else plt.matplotlib.colors.LightSource(azdeg=315, altdeg=45)
-            )
-            
-            # 🎨 添加线框效果（可选）
-            if self.enable_wireframe:
-                wire = self.ax_pressure.plot_wireframe(
-                    X, Y, smoothed_data,
-                    alpha=self.wireframe_alpha_3d,
-                    color='white',
-                    linewidth=0.5
+            # 检查是否需要重新创建3D表面
+            if (not hasattr(self, '_3d_surface') or 
+                self._3d_surface is None or 
+                self._pressure_data_changed):
+                
+                # 清除当前子图并重新创建3D子图
+                self.ax_pressure.remove()
+                from mpl_toolkits.mplot3d import Axes3D
+                self.ax_pressure = self.fig.add_subplot(1, 5, (3, 5), projection='3d')
+                
+                # 创建网格
+                rows, cols = pressure_data.shape
+                x = np.arange(cols)
+                y = np.arange(rows)
+                X, Y = np.meshgrid(x, y)
+                
+                # 🎨 修正y轴方向，使其与2D热力图保持一致
+                # 在2D中使用origin='upper'，所以y轴从上到下
+                # 在3D中需要翻转y轴数据以保持一致
+                Y_flipped = rows - 1 - Y  # 翻转y轴方向
+                
+                # 根据性能模式调整平滑处理
+                if self.performance_mode == "低性能":
+                    smoothed_data = pressure_data  # 不进行平滑
+                else:
+                    smoothed_data = self.apply_3d_smoothing(pressure_data)
+                
+                # 创建颜色映射 - 统一策略，避免颜色变化
+                if self.performance_mode == "低性能":
+                    enhanced_colormap = 'hot'  # 低性能模式使用简单颜色映射
+                else:
+                    # 标准、高性能、极限模式都使用自定义颜色映射，保持一致性
+                    enhanced_colormap = self.get_custom_colormap()
+                
+                # 获取颜色范围
+                vmin, vmax = self.y_lim
+                
+                # 绘制3D表面 - 使用修正后的Y坐标
+                self._3d_surface = self.ax_pressure.plot_surface(
+                    X, Y_flipped, smoothed_data, 
+                    cmap=enhanced_colormap,
+                    alpha=render_options['surface_alpha_3d'],
+                    linewidth=0,
+                    antialiased=render_options['enable_anti_aliasing'],
+                    vmin=vmin,
+                    vmax=vmax,
+                    shade=render_options['enable_3d_shadows'],
+                    lightsource=None if not render_options['enable_3d_lighting'] else plt.matplotlib.colors.LightSource(azdeg=315, altdeg=45)
                 )
-            
-            # 🎨 添加等高线投影（只在XY平面）
-            if self.enable_3d_shadows:
-                # 在XY平面上添加等高线投影
-                contour = self.ax_pressure.contour(
-                    X, Y, smoothed_data,
-                    levels=10,
-                    alpha=0.3,
-                    colors='white',
-                    linewidths=0.5,
-                    zdir='z',
-                    offset=0.0  # 投影到z=0平面
+                
+                # 根据性能模式添加线框效果 - 使用修正后的Y坐标
+                if render_options['enable_wireframe']:
+                    wire = self.ax_pressure.plot_wireframe(
+                        X, Y_flipped, smoothed_data,
+                        alpha=0.3,
+                        color='white',
+                        linewidth=0.5
+                    )
+                
+                # 设置标签和标题
+                self.ax_pressure.set_title("压力分布 (3D)", fontsize=12, fontweight='bold', color='white')
+                self.ax_pressure.set_xlabel("", color='white')
+                self.ax_pressure.set_ylabel("", color='white')
+                self.ax_pressure.set_zlabel("", color='white')
+                self.ax_pressure.set_zlim(vmin, vmax)
+                
+                # 设置固定视角
+                self.ax_pressure.view_init(elev=self.elevation_3d, azim=self.azimuth_3d)
+                
+                # 添加颜色条
+                if hasattr(self, 'pressure_colorbar') and self.pressure_colorbar is not None:
+                    try:
+                        self.pressure_colorbar.remove()
+                    except:
+                        pass
+                
+                self.pressure_colorbar = self.fig.colorbar(
+                    self._3d_surface, 
+                    ax=self.ax_pressure, 
+                    shrink=0.9,
+                    aspect=25,
+                    pad=0.15
                 )
-            
-            # 设置标签和标题
-            self.ax_pressure.set_title("压力分布 (3D 2:3比例布局)", fontsize=12, fontweight='bold', color='white')
-            
-            # 🎨 去除轴标签
-            self.ax_pressure.set_xlabel("", color='white')
-            self.ax_pressure.set_ylabel("", color='white')
-            self.ax_pressure.set_zlabel("", color='white')
-            
-            # 🎨 设置Z轴范围 - 使用设置的颜色范围
-            self.ax_pressure.set_zlim(vmin, vmax)
-            
-            # 🎨 动态视角设置
-            if self.enable_3d_animation:
-                # 添加轻微的自动旋转
-                self.azimuth_3d += self.rotation_speed_3d
-                if self.azimuth_3d > 360:
-                    self.azimuth_3d -= 360
-            
-            # 设置视角
-            self.ax_pressure.view_init(elev=self.elevation_3d, azim=self.azimuth_3d)
-            
-            # 🎨 添加颜色条 - 扩大版
-            if hasattr(self, 'pressure_colorbar') and self.pressure_colorbar is not None:
+                self.pressure_colorbar.set_label('压力值', rotation=270, labelpad=20, color='white', fontsize=10)
+                self.pressure_colorbar.ax.tick_params(colors='white', labelsize=9)
+                
+                # 设置3D样式
+                self.setup_3d_style_clean()
+                
+                self._pressure_data_changed = False
+            else:
+                # 只更新数据，不重新创建对象
                 try:
-                    self.pressure_colorbar.remove()
+                    self._3d_surface.set_array(pressure_data.ravel())
                 except:
-                    pass
-            
-            self.pressure_colorbar = self.fig.colorbar(
-                surf, 
-                ax=self.ax_pressure, 
-                shrink=0.9,  # 增加颜色条大小
-                aspect=25,   # 调整颜色条比例
-                pad=0.15     # 增加颜色条间距
-            )
-            self.pressure_colorbar.set_label('压力值', rotation=270, labelpad=20, color='white', fontsize=10)
-            self.pressure_colorbar.ax.tick_params(colors='white', labelsize=9)
-            
-            # 🎨 设置3D样式 - 去除网格和轴
-            self.setup_3d_style_clean()
-            
-            # 🎨 添加泛光效果（如果启用）
-            if self.enable_bloom_effect:
-                self.apply_bloom_effect(smoothed_data)
-            
-            # print(f"🎨 3D热力图渲染完成 (2:3比例布局) - 颜色范围: [{vmin:.6f}, {vmax:.6f}]")
+                    # 如果更新失败，标记需要重新创建
+                    self._pressure_data_changed = True
             
         except Exception as e:
             print(f"❌ 3D热力图渲染失败: {e}")
-            import traceback
-            traceback.print_exc()
-            # 如果3D渲染失败，回退到2D
+            # 回退到2D模式
             self.heatmap_view_mode = '2d'
-            self.heatmap_mode_btn.setText("切换到3D")
-            self.render_2d_heatmap(pressure_data)
+            self.render_2d_heatmap_optimized(pressure_data)
+    
+    def render_2d_heatmap_optimized(self, pressure_data):
+        """优化的2D热力图渲染"""
+        try:
+            # 根据性能模式调整渲染质量
+            if self.performance_mode == "低性能":
+                # 简化2D渲染
+                self.ax_pressure.clear()
+                im = self.ax_pressure.imshow(
+                    pressure_data, 
+                    cmap='hot',
+                    aspect='auto',
+                    vmin=self.y_lim[0],
+                    vmax=self.y_lim[1]
+                )
+                self.ax_pressure.set_title("压力分布 (2D)", fontsize=12, color='white')
+                self.setup_2d_style()
+            else:
+                # 完整2D渲染
+                self.render_2d_heatmap(pressure_data)
+            
+        except Exception as e:
+            print(f"❌ 2D热力图渲染失败: {e}")
+    
+    def get_3d_rendering_options_optimized(self):
+        """根据性能模式获取优化的3D渲染选项"""
+        if self.performance_mode == "低性能":
+            return {
+                'enable_3d_lighting': False,
+                'enable_3d_shadows': False,
+                'enable_wireframe': False,  # 低性能模式强制禁用线框
+                'enable_anti_aliasing': False,
+                'surface_alpha_3d': 1.0
+            }
+        elif self.performance_mode == "标准":
+            return {
+                'enable_3d_lighting': True,
+                'enable_3d_shadows': False,
+                'enable_wireframe': self.enable_wireframe,  # 使用用户设置
+                'enable_anti_aliasing': True,
+                'surface_alpha_3d': 0.9
+            }
+        else:
+            # 高性能和极限模式使用用户设置
+            return {
+                'enable_3d_lighting': self.enable_3d_lighting,
+                'enable_3d_shadows': self.enable_3d_shadows,
+                'enable_wireframe': self.enable_wireframe,  # 使用用户设置
+                'enable_anti_aliasing': self.enable_anti_aliasing,
+                'surface_alpha_3d': self.surface_alpha_3d
+            }
     
     def apply_3d_smoothing(self, data):
         """应用3D平滑处理"""
@@ -1611,7 +1789,19 @@ class BoxGameRenderer(FigureCanvas):
         if 'enable_bloom_effect' in options:
             self.enable_bloom_effect = options['enable_bloom_effect']
         
+        # 🎨 添加重置到固定45度视角的选项
+        if 'reset_to_fixed_45' in options and options['reset_to_fixed_45']:
+            self.reset_3d_view_to_fixed_45()
+        
         print(f"🎨 3D渲染选项已更新: {list(options.keys())}")
+    
+    def reset_3d_view_to_fixed_45(self):
+        """重置3D视角到固定的45度显示"""
+        self.elevation_3d = 45
+        self.azimuth_3d = 315  # 修正为315度（-45度）
+        self.rotation_speed_3d = 0.0
+        self.enable_3d_animation = False
+        print("🎨 3D视角已重置为固定45度仰角，315度方位角")
     
     def get_3d_rendering_options(self):
         """获取当前3D渲染选项"""

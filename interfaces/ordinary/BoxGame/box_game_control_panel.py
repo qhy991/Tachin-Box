@@ -50,7 +50,6 @@ class BoxGameControlPanel(QWidget):
     """推箱子游戏控制面板"""
     
     # 信号定义
-    reset_requested = pyqtSignal()
     parameter_changed = pyqtSignal(dict)
     visualization_changed = pyqtSignal(dict)
     # 新增路径规划信号
@@ -61,16 +60,14 @@ class BoxGameControlPanel(QWidget):
     sensor_connect_requested = pyqtSignal(str)  # port
     sensor_disconnect_requested = pyqtSignal()
     data_stop_requested = pyqtSignal()
-    # 新增性能模式切换信号
-    performance_mode_changed = pyqtSignal(str)  # mode_name
     
     def __init__(self, parent=None):
         super().__init__(parent)
         
         # 🎛️ 控制参数
         self.parameters = {
-            'pressure_threshold': 0.001,  # 更新默认值
-            'contact_area_threshold': 2,  # 添加接触面积阈值
+            'pressure_threshold': 0.001,  # 提高压力阈值，减少噪声影响
+            'contact_area_threshold': 3,  # 提高接触面积阈值，减少噪声影响
             'tangential_threshold': 0.05,
             'sliding_threshold': 0.08,
             'box_speed': 2.0,
@@ -94,10 +91,10 @@ class BoxGameControlPanel(QWidget):
         self.three_d_rendering_options = {
             'enable_3d_lighting': True,
             'enable_3d_shadows': True,
-            'enable_3d_animation': True,
-            'elevation_3d': 30.0,
-            'azimuth_3d': 45.0,
-            'rotation_speed_3d': 0.5,
+            'enable_3d_animation': False,  # 禁用3D动画旋转
+            'elevation_3d': 45.0,          # 固定45度仰角
+            'azimuth_3d': 315.0,           # 修正为315度方位角（-45度）
+            'rotation_speed_3d': 0.0,      # 旋转速度设为0
             'surface_alpha_3d': 0.8,
             'enable_wireframe': True,  # 默认启动网格
             'enable_anti_aliasing': True,
@@ -131,61 +128,148 @@ class BoxGameControlPanel(QWidget):
         """初始化用户界面"""
         # self.setFixedWidth(350)  # 移除固定宽度，让面板自适应
         
-        # 🎨 强制设置白色边框样式
+        # 🎨 统一设置样式系统
         self.setStyleSheet("""
             QWidget {
                 padding: 2px;
             }
+            
+            /* 统一按钮样式 */
             QPushButton {
                 border: 2px solid #FFFFFF !important;
-                border-radius: 4px !important;
-                margin: 1px;
+                border-radius: 6px !important;
+                margin: 2px;
+                padding: 8px 12px;
+                font-size: 12px !important;
+                font-weight: bold !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
+                min-height: 20px;
             }
             QPushButton:hover {
                 border: 2px solid #E0E0E0 !important;
+                transform: translateY(-1px);
             }
+            QPushButton:pressed {
+                border: 2px solid #CCCCCC !important;
+                transform: translateY(0px);
+            }
+            QPushButton:disabled {
+                border: 2px solid #666666 !important;
+                background-color: #444444 !important;
+                color: #888888 !important;
+            }
+            
+            /* 统一下拉框样式 */
             QComboBox {
                 border: 2px solid #FFFFFF !important;
-                border-radius: 4px !important;
-                margin: 1px;
+                border-radius: 6px !important;
+                margin: 2px;
+                padding: 6px 10px;
+                font-size: 12px !important;
+                font-weight: bold !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
+                background-color: #333333;
+                color: #FFFFFF;
+                min-height: 20px;
             }
             QComboBox:hover {
                 border: 2px solid #E0E0E0 !important;
             }
+            QComboBox:focus {
+                border: 2px solid #4CAF50 !important;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #FFFFFF;
+                margin-right: 5px;
+            }
+            
+            /* 统一输入框样式 */
             QLineEdit {
                 border: 2px solid #FFFFFF !important;
-                border-radius: 4px !important;
-                margin: 1px;
+                border-radius: 6px !important;
+                margin: 2px;
+                padding: 6px 10px;
+                font-size: 12px !important;
+                font-weight: bold !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
+                background-color: #333333;
+                color: #FFFFFF;
+                min-height: 20px;
             }
             QLineEdit:hover {
                 border: 2px solid #E0E0E0 !important;
             }
+            QLineEdit:focus {
+                border: 2px solid #4CAF50 !important;
+            }
+            
+            /* 统一分组框样式 */
             QGroupBox {
-                border: 2px solid #FFFFFF !important;
-                border-radius: 6px !important;
-                margin: 0px !important;
-                padding: 0px !important;
-                padding-top: 20px !important;
-                padding-left: 0px !important;
-                padding-right: 0px !important;
-                padding-bottom: 0px !important;
+                border: 2px solid #666666 !important;
+                border-radius: 8px !important;
+                margin: 5px !important;
+                padding: 15px 5px 5px 5px !important;
                 background-color: transparent !important;
+                font-size: 12px !important;
+                font-weight: bold !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
             }
             QGroupBox::title {
                 subcontrol-origin: border;
                 subcontrol-position: top center;
                 left: 0px;
                 top: 8px;
-                padding: 0px 5px 0px 5px;
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
+                padding: 0px 8px 0px 8px;
+                color: white !important;
+                font-weight: bold !important;
+                font-size: 12px !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
                 background-color: #000000;
                 border: none !important;
                 text-align: center;
             }
+            
+            /* 统一标签样式 */
             QLabel {
+                color: white !important;
+                font-size: 12px !important;
+                font-weight: bold !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
+            }
+            
+            /* 统一复选框样式 */
+            QCheckBox {
+                color: #FFFFFF !important;
+                font-size: 12px !important;
+                font-weight: bold !important;
+                font-family: "Microsoft YaHei", "SimHei", Arial, sans-serif !important;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #666666;
+                border-radius: 4px;
+                background-color: #333333;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #4CAF50;
+                background-color: #4CAF50;
+            }
+            QCheckBox::indicator:checked::after {
+                content: "✓";
                 color: white;
+                font-size: 14px;
+                font-weight: bold;
+                text-align: center;
+                line-height: 18px;
             }
         """)
         
@@ -196,9 +280,6 @@ class BoxGameControlPanel(QWidget):
         
         # 🎨 Logo显示组
         self.create_logo_group(main_layout)
-        
-        # 🎮 游戏控制组
-        self.create_game_control_group(main_layout)
         
         # 路径引导分组
         self.create_path_planning_group(main_layout)
@@ -277,27 +358,14 @@ class BoxGameControlPanel(QWidget):
     def create_game_control_group(self, parent_layout):
         """创建游戏控制组"""
         group = QGroupBox("游戏控制")
-        group.setMaximumHeight(80)  # 限制高度以适应顶部布局
+        group.setFixedHeight(60)  # 固定高度，与其他组保持一致
+        group.setMinimumWidth(100)  # 进一步减少最小宽度，因为移除了重置按钮
         layout = QHBoxLayout(group)  # 改为水平布局
         layout.setContentsMargins(5, 5, 5, 5)  # 减少内边距
         layout.setSpacing(5)  # 减少间距
         
-        # 🔄 重置按钮
-        self.reset_button = QPushButton("🔄 重置游戏")
-        self.reset_button.clicked.connect(self.on_reset_clicked)
-        layout.addWidget(self.reset_button)
-        
-        # ⚡ 性能模式选择器
-        performance_label = QLabel("性能模式:")
-        performance_label.setStyleSheet("color: #CCCCCC; font-size: 10px;")
-        layout.addWidget(performance_label)
-        
-        self.performance_combo = QComboBox()
-        self.performance_combo.addItems(["低性能", "标准", "高性能", "极限"])
-        self.performance_combo.setCurrentText("极限")  # 默认选择极限模式
-        self.performance_combo.setMinimumWidth(80)
-        self.performance_combo.currentTextChanged.connect(self.on_performance_mode_changed)
-        layout.addWidget(self.performance_combo)
+        # 🎮 游戏控制组现在为空，只作为占位符
+        # 如果需要添加其他游戏控制功能，可以在这里添加
         
         parent_layout.addWidget(group)
     
@@ -316,14 +384,9 @@ class BoxGameControlPanel(QWidget):
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
-                border: 2px solid #FFFFFF !important;
-                padding: 5px;
-                border-radius: 3px;
-                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #45a049;
-                border: 2px solid #E0E0E0 !important;
             }
             QPushButton:checked {
                 background-color: #FF5722;
@@ -347,14 +410,9 @@ class BoxGameControlPanel(QWidget):
             QPushButton {
                 background-color: #2196F3;
                 color: white;
-                border: 2px solid #FFFFFF !important;
-                padding: 5px;
-                border-radius: 3px;
-                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #1976D2;
-                border: 2px solid #E0E0E0 !important;
             }
         """)
         layout.addWidget(self.path_reset_btn)
@@ -410,7 +468,9 @@ class BoxGameControlPanel(QWidget):
         layout.setSpacing(5)  # 减少间距
         
         # 端口输入
-        layout.addWidget(QLabel("端口:"))
+        port_label = QLabel("端口:")
+        layout.addWidget(port_label)
+        
         self.port_input = QLineEdit("0")
         self.port_input.setPlaceholderText("输入端口号")
         self.port_input.setMaximumWidth(60)
@@ -423,6 +483,26 @@ class BoxGameControlPanel(QWidget):
         self.disconnect_btn.clicked.connect(self.on_disconnect_clicked)
         self.disconnect_btn.setEnabled(False)
         
+        # 设置按钮样式
+        self.connect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.disconnect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #E64A19;
+            }
+        """)
+        
         layout.addWidget(self.connect_btn)
         layout.addWidget(self.disconnect_btn)
         
@@ -430,7 +510,15 @@ class BoxGameControlPanel(QWidget):
         self.stop_data_btn = QPushButton("停止采集")
         self.stop_data_btn.clicked.connect(self.on_stop_data_clicked)
         self.stop_data_btn.setEnabled(False)
-        
+        self.stop_data_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
         layout.addWidget(self.stop_data_btn)
         
         # 连接状态显示
@@ -457,23 +545,12 @@ class BoxGameControlPanel(QWidget):
             QPushButton {
                 background-color: #FF9800;
                 color: white;
-                border: 2px solid #FFFFFF !important;
-                padding: 5px;
-                border-radius: 3px;
-                font-size: 10px;
             }
             QPushButton:hover {
                 background-color: #F57C00;
-                border: 2px solid #E0E0E0 !important;
             }
         """)
         layout.addWidget(self.heatmap_2d_3d_btn)
-
-        # 🎨 移除单独的3D选项和平滑选项按钮，现在都集成到设置对话框中
-        # 添加一个说明标签
-        # info_label = QLabel("💡 3D选项和平滑选项已集成到设置中")
-        # info_label.setStyleSheet("color: #666666; font-size: 10px;")
-        # layout.addWidget(info_label)
 
         parent_layout.addWidget(group)
 
@@ -482,21 +559,16 @@ class BoxGameControlPanel(QWidget):
         # 发送切换信号给渲染器
         self.visualization_changed.emit({'toggle_heatmap_mode': True})
         
-        # 更新按钮文本
+        # 更新按钮文本和样式
         if self.heatmap_2d_3d_btn.text() == "2D热力图":
             self.heatmap_2d_3d_btn.setText("3D热力图")
             self.heatmap_2d_3d_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #FF9800;
                     color: white;
-                    border: 2px solid #FFFFFF !important;
-                    padding: 5px;
-                    border-radius: 3px;
-                    font-size: 10px;
                 }
                 QPushButton:hover {
                     background-color: #F57C00;
-                    border: 2px solid #E0E0E0 !important;
                 }
             """)
             print("🎨 切换到3D热力图模式")
@@ -506,28 +578,13 @@ class BoxGameControlPanel(QWidget):
                 QPushButton {
                     background-color: #4CAF50;
                     color: white;
-                    border: 2px solid #FFFFFF !important;
-                    padding: 5px;
-                    border-radius: 3px;
-                    font-size: 10px;
                 }
                 QPushButton:hover {
                     background-color: #45a049;
-                    border: 2px solid #E0E0E0 !important;
                 }
             """)
             print("🎨 切换到2D热力图模式")
 
-    def on_reset_clicked(self):
-        """重置按钮点击"""
-        self.reset_requested.emit()
-        print("🔄 发出重置请求")
-    
-    def on_performance_mode_changed(self, mode_name):
-        """性能模式切换事件"""
-        print(f"⚡ 性能模式切换请求: {mode_name}")
-        self.performance_mode_changed.emit(mode_name)
-    
     def update_visualization_option(self, key, value):
         """更新可视化选项"""
         self.visualization_options[key] = value
@@ -577,13 +634,13 @@ class BoxGameControlPanel(QWidget):
             if connected:
                 if collecting:
                     self.status_widgets['sensor_status'].setText("采集中")
-                    self.status_widgets['sensor_status'].setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 10px;")
+                    self.status_widgets['sensor_status'].setStyleSheet("color: #4CAF50; font-weight: bold;")
                 else:
                     self.status_widgets['sensor_status'].setText("已连接")
-                    self.status_widgets['sensor_status'].setStyleSheet("color: #FF9800; font-weight: bold; font-size: 10px;")
+                    self.status_widgets['sensor_status'].setStyleSheet("color: #FF9800; font-weight: bold;")
             else:
                 self.status_widgets['sensor_status'].setText("未连接")
-                self.status_widgets['sensor_status'].setStyleSheet("color: #F44336; font-weight: bold; font-size: 10px;")
+                self.status_widgets['sensor_status'].setStyleSheet("color: #F44336; font-weight: bold;")
         
         if connected:
             self.connection_status.setStyleSheet("color: green; font-weight: bold;")
@@ -603,10 +660,24 @@ class BoxGameControlPanel(QWidget):
             self.stop_data_btn.setEnabled(False)
     
     def update_status(self, key, value):
-        """更新状态栏信息 - 只处理渲染帧率"""
+        """更新状态栏信息 - 处理控制模式和渲染帧率"""
         if hasattr(self, 'status_widgets') and key in self.status_widgets:
-            if key == 'renderer_fps':
-                # 🎨 只处理渲染器帧率信息
+            if key == 'control_mode':
+                # 🎮 处理控制模式信息
+                if value == 'joystick':
+                    self.status_widgets[key].setText("🕹️ 摇杆模式")
+                    self.status_widgets[key].setStyleSheet("color: #4CAF50; font-weight: bold;")
+                elif value == 'touchpad':
+                    self.status_widgets[key].setText("🖱️ 触控板模式")
+                    self.status_widgets[key].setStyleSheet("color: #2196F3; font-weight: bold;")
+                elif value == 'idle':
+                    self.status_widgets[key].setText("⏸️ 空闲模式")
+                    self.status_widgets[key].setStyleSheet("color: #FF9800; font-weight: bold;")
+                else:
+                    self.status_widgets[key].setText(f"🎮 {value}")
+                    self.status_widgets[key].setStyleSheet("color: #9C27B0; font-weight: bold;")
+            elif key == 'renderer_fps':
+                # 🎨 处理渲染器帧率信息
                 if isinstance(value, (int, float)):
                     if value > 0:
                         self.status_widgets[key].setText(f"{value:.1f} FPS")
@@ -687,7 +758,7 @@ class BoxGameControlPanel(QWidget):
     # 这些功能现在都集成到主设置对话框中
 
     def create_status_group(self, parent_layout):
-        """创建状态显示组 - 只显示渲染帧率"""
+        """创建状态显示组 - 显示控制模式和渲染帧率"""
         group = QGroupBox("系统状态")
         group.setMaximumHeight(60)
         layout = QHBoxLayout(group)
@@ -697,13 +768,25 @@ class BoxGameControlPanel(QWidget):
         # 状态组件字典
         self.status_widgets = {}
         
-        # 🎨 只显示渲染帧率
+        # 🎮 显示控制模式
+        control_mode_label = QLabel("控制模式:")
+        layout.addWidget(control_mode_label)
+        
+        self.status_widgets['control_mode'] = QLabel("⏸️ 空闲模式")
+        self.status_widgets['control_mode'].setStyleSheet("color: #FF9800; font-weight: bold;")
+        layout.addWidget(self.status_widgets['control_mode'])
+        
+        # 添加分隔符
+        separator = QLabel("|")
+        separator.setStyleSheet("color: #666666; font-weight: bold;")
+        layout.addWidget(separator)
+        
+        # 🎨 显示渲染帧率
         renderer_fps_label = QLabel("渲染帧率:")
-        renderer_fps_label.setStyleSheet("color: #CCCCCC; font-size: 12px; font-weight: bold;")
         layout.addWidget(renderer_fps_label)
         
         self.status_widgets['renderer_fps'] = QLabel("0.0 FPS")
-        self.status_widgets['renderer_fps'].setStyleSheet("color: #96CEB4; font-size: 12px; font-weight: bold;")
+        self.status_widgets['renderer_fps'].setStyleSheet("color: #96CEB4; font-weight: bold;")
         layout.addWidget(self.status_widgets['renderer_fps'])
         
         # 添加弹性空间

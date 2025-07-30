@@ -160,9 +160,9 @@ class BoxGameCoreOptimized(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pressure_threshold = 0.001  # 调整压力阈值，从0.005降低到0.003，提高接触检测灵敏度
-        self.sliding_threshold = 0.08  # 降低滑动阈值，与控制面板默认值一致
-        self.contact_area_threshold = 3  # 降低接触面积阈值
+        self.pressure_threshold = 0.001  # 提高压力阈值，从0.001增加到0.002，减少噪声影响
+        self.sliding_threshold = 0.08  # 保持滑动阈值不变
+        self.contact_area_threshold = 3  # 提高接触面积阈值，从3增加到5，减少噪声影响
         self.tangential_analyzer = None
         self.setup_analyzers()
         self.data_bridge = None
@@ -179,10 +179,15 @@ class BoxGameCoreOptimized(QObject):
         self.consensus_history = deque(maxlen=10)
         self.confidence_history = deque(maxlen=10)
         self.analysis_frame_count = 0
-        self.gradient_threshold = 1e-4  # 提高梯度阈值，减少误判
+        self.gradient_threshold = 5e-4  # 提高梯度阈值，从1e-4增加到5e-4，减少噪声影响
         
         # 🆕 新增IDLE检测开关
         self.enable_idle_detection = False
+        
+        # 🆕 新增时间稳定性检查参数
+        self.idle_stability_frames = 3  # 需要连续3帧稳定才判定为idle
+        self.idle_stability_history = deque(maxlen=5)  # 保存最近5帧的idle状态
+        self.consecutive_idle_frames = 0  # 连续idle帧数
         
         # 🎮 集成智能控制系统
         self.smart_control = SmartControlSystem()
@@ -325,13 +330,31 @@ class BoxGameCoreOptimized(QObject):
             not idle_analysis['factors'].get('no_pressure_data', False)
         )
         
-        idle_analysis['is_idle'] = is_idle
+        # 🆕 添加时间稳定性检查
+        self.idle_stability_history.append(is_idle)
         
+        # 计算连续idle帧数
         if is_idle:
-            idle_analysis['reasons'].append("所有条件满足，判定为idle状态")
+            self.consecutive_idle_frames += 1
+        else:
+            self.consecutive_idle_frames = 0
+        
+        # 只有连续稳定才判定为真正的idle状态
+        final_is_idle = (self.consecutive_idle_frames >= self.idle_stability_frames)
+        
+        idle_analysis['is_idle'] = final_is_idle
+        idle_analysis['consecutive_idle_frames'] = self.consecutive_idle_frames
+        idle_analysis['stability_threshold'] = self.idle_stability_frames
+        
+        if final_is_idle:
+            idle_analysis['reasons'].append(f"连续{self.consecutive_idle_frames}帧稳定，判定为idle状态")
+        elif is_idle:
+            idle_analysis['reasons'].append(f"当前帧满足idle条件，但需要连续{self.idle_stability_frames}帧稳定")
+        else:
+            idle_analysis['reasons'].append("当前帧不满足idle条件")
         
         # 🐛 调试输出：IDLE分析结果
-        print(f"🔍 IDLE分析: 状态={'✅ Idle' if is_idle else '❌ 非Idle'}, 原因数量={len(idle_analysis['reasons'])}")
+        print(f"🔍 IDLE分析: 状态={'✅ Idle' if final_is_idle else '❌ 非Idle'}, 连续帧={self.consecutive_idle_frames}/{self.idle_stability_frames}, 原因数量={len(idle_analysis['reasons'])}")
         if idle_analysis['reasons']:
             print(f"   原因: {idle_analysis['reasons'][:2]}...")  # 只显示前2个原因
         
@@ -1001,8 +1024,6 @@ class BoxGameMainWindow(QMainWindow):
             # 🗺️ 添加路径规划信号连接
             self.control_panel.path_mode_requested.connect(self.on_path_mode_requested)
             self.control_panel.path_reset_requested.connect(self.on_path_reset_requested)
-            # ⚡ 添加性能模式切换信号连接
-            self.control_panel.performance_mode_changed.connect(self.set_performance_mode)
         
         # 🆕 数据桥接器到渲染器的连接 - 修复压力数据显示
         if self.renderer:
@@ -1151,17 +1172,20 @@ class BoxGameMainWindow(QMainWindow):
         except Exception as e:
             print(f"❌ 停止数据采集失败: {str(e)}")
     
-    def set_performance_mode(self, mode):
-        """设置性能模式"""
+    def set_performance_mode(self, mode="高性能"):
+        """设置性能模式 - 默认使用高性能模式"""
         try:
-            if FrameRateConfig.set_performance_mode(mode):
+            # 默认使用高性能模式
+            if FrameRateConfig.set_performance_mode("高性能"):
                 # 更新各个组件的帧率
                 self.sensor_thread.update_frame_rate()
                 self.game_core.update_frame_rate()
                 if self.renderer:
                     self.renderer.update_frame_rate()
+                    # 🚀 更新渲染器性能模式
+                    self.renderer.set_performance_mode("高性能")
                 
-                print(f"⚡ 性能模式已设置为: {mode}")
+                print("⚡ 性能模式已设置为: 高性能")
         except Exception as e:
             print(f"❌ 设置性能模式失败: {str(e)}")
     
@@ -1191,7 +1215,7 @@ class BoxGameMainWindow(QMainWindow):
     
     @pyqtSlot(dict)
     def on_game_state_changed(self, state_info):
-        """处理游戏状态变化 - 只更新渲染器"""
+        """处理游戏状态变化 - 更新渲染器和控制面板"""
         try:
             # 更新渲染器
             if self.renderer:
@@ -1199,6 +1223,11 @@ class BoxGameMainWindow(QMainWindow):
             
             # 更新数据桥接器
             self.data_bridge.set_analysis_results(state_info)
+            
+            # 🎮 更新控制面板的控制模式显示
+            if self.control_panel:
+                control_mode = state_info.get('control_mode', 'unknown')
+                self.control_panel.update_status('control_mode', control_mode)
             
             print(f"🎮 游戏状态: {state_info.get('control_mode', 'unknown')}")
             
@@ -1258,22 +1287,11 @@ class BoxGameMainWindow(QMainWindow):
     
     @pyqtSlot(float, float)
     def on_renderer_mouse_pressed(self, x, y):
-        """处理渲染器鼠标点击事件"""
-        try:
-            print(f"🖱️ 鼠标点击: ({x:.2f}, {y:.2f})")
-        except Exception as e:
-            print(f"❌ 处理鼠标点击失败: {str(e)}")
-    
-    @pyqtSlot()
-    def on_reset_requested(self):
-        """处理重置请求"""
-        try:
-            print("🔄 收到重置请求")
-            self.game_core.reset_game()
-            if self.renderer:
-                self.renderer.reset_visualization()
-        except Exception as e:
-            print(f"❌ 重置失败: {str(e)}")
+        """渲染器鼠标按下事件"""
+        # 将鼠标坐标转换为游戏坐标
+        game_x = x * self.game_core.game_width
+        game_y = y * self.game_core.game_height
+        self.game_core.handle_mouse_input(game_x, game_y)
     
     @pyqtSlot(dict)
     def on_parameter_changed(self, params):

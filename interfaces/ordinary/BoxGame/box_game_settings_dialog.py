@@ -140,14 +140,14 @@ class BoxGameSettingsDialog(QDialog):
         
         # 动画选项
         self.enable_3d_animation = QCheckBox("启用3D动画")
-        self.enable_3d_animation.setChecked(True)
+        self.enable_3d_animation.setChecked(False)  # 禁用3D动画
         three_d_layout.addWidget(self.enable_3d_animation, 2, 0, 1, 2)
         
         # 旋转速度
         three_d_layout.addWidget(QLabel("旋转速度:"), 3, 0)
         self.rotation_speed_3d = QDoubleSpinBox()
         self.rotation_speed_3d.setRange(0.0, 5.0)
-        self.rotation_speed_3d.setValue(0.5)
+        self.rotation_speed_3d.setValue(0.0)  # 旋转速度设为0
         self.rotation_speed_3d.setSingleStep(0.1)
         three_d_layout.addWidget(self.rotation_speed_3d, 3, 1)
         
@@ -155,13 +155,13 @@ class BoxGameSettingsDialog(QDialog):
         three_d_layout.addWidget(QLabel("仰角:"), 4, 0)
         self.elevation_3d = QDoubleSpinBox()
         self.elevation_3d.setRange(0, 90)
-        self.elevation_3d.setValue(30.0)
+        self.elevation_3d.setValue(45.0)  # 固定45度仰角
         three_d_layout.addWidget(self.elevation_3d, 4, 1)
         
         three_d_layout.addWidget(QLabel("方位角:"), 5, 0)
         self.azimuth_3d = QDoubleSpinBox()
         self.azimuth_3d.setRange(0, 360)
-        self.azimuth_3d.setValue(45.0)
+        self.azimuth_3d.setValue(45.0)  # 固定45度方位角
         three_d_layout.addWidget(self.azimuth_3d, 5, 1)
         
         # 渲染选项
@@ -378,10 +378,10 @@ class BoxGameSettingsDialog(QDialog):
         # 🎨 设置3D渲染参数
         self.enable_3d_lighting.setChecked(vis.get('enable_3d_lighting', True))
         self.enable_3d_shadows.setChecked(vis.get('enable_3d_shadows', True))
-        self.enable_3d_animation.setChecked(vis.get('enable_3d_animation', True))
-        self.elevation_3d.setValue(vis.get('elevation_3d', 30.0))
-        self.azimuth_3d.setValue(vis.get('azimuth_3d', 45.0))
-        self.rotation_speed_3d.setValue(vis.get('rotation_speed_3d', 0.5))
+        self.enable_3d_animation.setChecked(vis.get('enable_3d_animation', False)) # 使用设置的值
+        self.elevation_3d.setValue(vis.get('elevation_3d', 45.0)) # 使用设置的值
+        self.azimuth_3d.setValue(vis.get('azimuth_3d', 45.0)) # 使用设置的值
+        self.rotation_speed_3d.setValue(vis.get('rotation_speed_3d', 0.0)) # 使用设置的值
         self.surface_alpha_3d.setValue(vis.get('surface_alpha_3d', 0.8))
         self.enable_wireframe.setChecked(vis.get('enable_wireframe', True))  # 默认启动网格
         self.enable_anti_aliasing.setChecked(vis.get('enable_anti_aliasing', True))
