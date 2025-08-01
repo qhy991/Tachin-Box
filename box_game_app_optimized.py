@@ -42,8 +42,6 @@ except ImportError as e:
 try:
     from interfaces.ordinary.BoxGame.run_box_game_optimized import (
         FrameRateConfig, 
-        RealSensorInterface, 
-        SimulatedSensorInterface, 
         SensorDataThread
     )
     SENSOR_INTERFACES_AVAILABLE = True
@@ -61,20 +59,97 @@ except ImportError:
     print("⚠️ 无法导入路径规划模块")
     PATH_PLANNING_AVAILABLE = False
 
-# 🎯 简化：移除切向力分析器导入，系统只使用COP
-# 不再需要切向力分析器，专注于COP控制
 
 from interfaces.ordinary.BoxGame.contact_filter import is_special_idle_case
 
 from interfaces.ordinary.BoxGame.box_smart_control_system import SmartControlSystem
 
+class PerformanceMonitor:
+    """性能监控器 - 跟踪各种处理时间"""
+    
+    def __init__(self, window_size=100):
+        self.window_size = window_size
+        self.processing_times = deque(maxlen=window_size)
+        self.render_times = deque(maxlen=window_size)
+        self.physics_times = deque(maxlen=window_size)
+        self.total_times = deque(maxlen=window_size)
+        self.frame_count = 0
+        
+    def add_processing_time(self, time_ms):
+        """添加数据处理时间"""
+        self.processing_times.append(time_ms)
+        self.frame_count += 1
+        
+    def add_render_time(self, time_ms):
+        """添加渲染时间"""
+        self.render_times.append(time_ms)
+        
+    def add_physics_time(self, time_ms):
+        """添加物理更新时间"""
+        self.physics_times.append(time_ms)
+        
+    def add_total_time(self, time_ms):
+        """添加总处理时间"""
+        self.total_times.append(time_ms)
+        
+    def get_statistics(self):
+        """获取性能统计信息"""
+        stats = {
+            'frame_count': self.frame_count,
+            'processing': {
+                'current': self.processing_times[-1] if self.processing_times else 0,
+                'avg': np.mean(self.processing_times) if self.processing_times else 0,
+                'max': np.max(self.processing_times) if self.processing_times else 0,
+                'min': np.min(self.processing_times) if self.processing_times else 0
+            },
+            'render': {
+                'current': self.render_times[-1] if self.render_times else 0,
+                'avg': np.mean(self.render_times) if self.render_times else 0,
+                'max': np.max(self.render_times) if self.render_times else 0,
+                'min': np.min(self.render_times) if self.render_times else 0
+            },
+            'physics': {
+                'current': self.physics_times[-1] if self.physics_times else 0,
+                'avg': np.mean(self.physics_times) if self.physics_times else 0,
+                'max': np.max(self.physics_times) if self.physics_times else 0,
+                'min': np.min(self.physics_times) if self.physics_times else 0
+            },
+            'total': {
+                'current': self.total_times[-1] if self.total_times else 0,
+                'avg': np.mean(self.total_times) if self.total_times else 0,
+                'max': np.max(self.total_times) if self.total_times else 0,
+                'min': np.min(self.total_times) if self.total_times else 0
+            }
+        }
+        return stats
+        
+    def print_performance_summary(self):
+        """打印性能汇总"""
+        stats = self.get_statistics()
+        print("\n" + "="*60)
+        print("📊 性能监控汇总")
+        print("="*60)
+        print(f"📈 总帧数: {stats['frame_count']}")
+        print(f"⏱️ 数据处理: 当前={stats['processing']['current']:.2f}ms, 平均={stats['processing']['avg']:.2f}ms, 最大={stats['processing']['max']:.2f}ms, 最小={stats['processing']['min']:.2f}ms")
+        print(f"🎨 渲染时间: 当前={stats['render']['current']:.2f}ms, 平均={stats['render']['avg']:.2f}ms, 最大={stats['render']['max']:.2f}ms, 最小={stats['render']['min']:.2f}ms")
+        print(f"⚙️ 物理更新: 当前={stats['physics']['current']:.2f}ms, 平均={stats['physics']['avg']:.2f}ms, 最大={stats['physics']['max']:.2f}ms, 最小={stats['physics']['min']:.2f}ms")
+        print(f"📊 总处理时间: 当前={stats['total']['current']:.2f}ms, 平均={stats['total']['avg']:.2f}ms, 最大={stats['total']['max']:.2f}ms, 最小={stats['total']['min']:.2f}ms")
+        
+        # 计算理论FPS
+        avg_total = stats['total']['avg']
+        theoretical_fps = 1000 / avg_total if avg_total > 0 else 0
+        print(f"🎯 理论FPS: {theoretical_fps:.1f} (基于平均总处理时间)")
+        print("="*60)
+
 class BoxGameDataBridgeOptimized(QObject):
-    """游戏数据桥接器 - 高性能优化版"""
+    """游戏数据桥接器"""
     pressure_data_updated = pyqtSignal(np.ndarray)
     analysis_results_updated = pyqtSignal(dict)
     consensus_angle_updated = pyqtSignal(float, float)
     # 🆕 新增idle状态分析信号
     idle_analysis_updated = pyqtSignal(dict)
+    # 🕐 新增物理时间信号
+    physics_time_updated = pyqtSignal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,6 +188,11 @@ class BoxGameDataBridgeOptimized(QObject):
         if idle_analysis is not None:
             self.idle_analysis_updated.emit(idle_analysis)
 
+    # 🕐 新增物理时间设置方法
+    def set_physics_time(self, physics_time_ms):
+        if physics_time_ms is not None:
+            self.physics_time_updated.emit(physics_time_ms)
+
     def get_contact_time(self):
         if self.contact_start_time is None:
             return 0.0
@@ -147,7 +227,7 @@ class BoxGameDataBridgeOptimized(QObject):
 
 
 class BoxGameCoreOptimized(QObject):
-    """推箱子游戏核心引擎（高性能优化版）"""
+    """推箱子游戏核心引擎"""
     game_state_changed = pyqtSignal(dict)
     box_state_updated = pyqtSignal(dict)
     analysis_completed = pyqtSignal(dict)
@@ -160,16 +240,21 @@ class BoxGameCoreOptimized(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pressure_threshold = 0.001  # 提高压力阈值，从0.001增加到0.002，减少噪声影响
-        self.sliding_threshold = 0.08  # 保持滑动阈值不变
-        self.contact_area_threshold = 3  # 提高接触面积阈值，从3增加到5，减少噪声影响
+        self.pressure_threshold = 0.001  # 降低压力阈值，从0.001改为0.0005
+        self.sliding_threshold = 0.08 
+        self.contact_area_threshold = 3  # 降低接触面积阈值，从3改为1
         self.tangential_analyzer = None
         self.setup_analyzers()
         self.data_bridge = None
         self.box_position = np.array([32.0, 32.0])
         self.box_original_position = np.array([32.0, 32.0])
         self.box_target_position = np.array([32.0, 32.0])
-        self.box_size = 6.0
+        self.box_size = 12.0  # 增大箱子尺寸，从6.0改为12.0
+        
+        # 🆕 添加游戏区域尺寸属性
+        self.game_width = 64.0
+        self.game_height = 64.0
+        
         self.is_contact = False
         self.is_tangential = False
         self.is_sliding = False
@@ -229,10 +314,8 @@ class BoxGameCoreOptimized(QObject):
             print("🗺️ 路径规划信号连接完成")
 
     def setup_analyzers(self):
-        # 🎯 简化：完全跳过切向力分析器初始化
-        # 现在系统只使用COP，不需要切向力分析
+
         self.tangential_analyzer = None
-        print("🎯 系统已简化为COP专用模式，跳过切向力分析器初始化")
 
     # 🆕 新增idle状态分析函数
     def analyze_idle_factors(self, pressure_data, is_sliding, is_tangential, current_cop, previous_cop=None):
@@ -364,6 +447,9 @@ class BoxGameCoreOptimized(QObject):
         if pressure_data is None or pressure_data.size == 0:
             return None
         try:
+            # 🕐 开始测量数据处理时间
+            processing_start_time = time.time()
+            
             # 🆕 增加帧计数器
             self.analysis_frame_count += 1
             
@@ -411,7 +497,7 @@ class BoxGameCoreOptimized(QObject):
                 idle_analysis  # 🆕 传递idle分析结果
             )
             
-            # 🆕 更新数据桥接器 - 传递idle分析结果
+            # �� 更新数据桥接器 - 传递idle分析结果
             if hasattr(self, 'data_bridge') and self.data_bridge:
                 print(f"🎮 游戏核心: 准备发送IDLE分析到数据桥接器...")
                 # 不传递分析结果，只传递COP信息
@@ -426,6 +512,10 @@ class BoxGameCoreOptimized(QObject):
             else:
                 print(f"❌ 游戏核心: 数据桥接器不可用")
             
+            # 🕐 计算数据处理时间
+            processing_time = (time.time() - processing_start_time) * 1000  # 转换为毫秒
+            print(f"⏱️ 数据处理时间: {processing_time:.2f}ms (帧 {self.analysis_frame_count})")
+            
             return {
                 'contact_detected': contact_detected,
                 'current_cop': current_cop,
@@ -436,7 +526,8 @@ class BoxGameCoreOptimized(QObject):
                 'analysis_results': analysis_results,
                 'frame_count': self.analysis_frame_count,
                 'system_mode': 'cop_only',  # 标记为仅使用COP模式
-                'idle_analysis': idle_analysis  # 🆕 包含idle分析结果
+                'idle_analysis': idle_analysis,  # 🆕 包含idle分析结果
+                'processing_time_ms': processing_time  # 🕐 添加处理时间
             }
         except Exception as e:
             print(f"❌ 压力数据处理失败: {e}")
@@ -626,6 +717,11 @@ class BoxGameCoreOptimized(QObject):
 
     def update_physics(self):
         """🎯 更新箱子位置朝向目标位置"""
+        print(f"⚙️ update_physics被调用 (帧 {self.analysis_frame_count})")
+        
+        # 🕐 开始测量物理更新时间
+        physics_start_time = time.time()
+        
         # 检查路径规划是否启用
         if self.path_enhancer and self.path_enhancer.is_path_mode_enabled:
             # 🗺️ 路径模式：只更新路径进度，不覆盖用户控制
@@ -640,12 +736,20 @@ class BoxGameCoreOptimized(QObject):
             movement_factor = 0.15
         
         # 🎯 更新箱子位置朝向目标位置（由用户手指控制决定）
+        old_position = self.box_position.copy()
         self.box_position[0] += (self.box_target_position[0] - self.box_position[0]) * movement_factor
         self.box_position[1] += (self.box_target_position[1] - self.box_position[1]) * movement_factor
         
         # 📦 确保箱子在游戏区域内
         self.box_position[0] = np.clip(self.box_position[0], 5, 59)
         self.box_position[1] = np.clip(self.box_position[1], 5, 59)
+        
+        # 🔍 调试：检查位置是否变化
+        position_changed = not np.allclose(old_position, self.box_position)
+        if position_changed:
+            print(f"📦 箱子位置已更新: {old_position} → {self.box_position}")
+        else:
+            print(f"📦 箱子位置未变化: {self.box_position} (目标: {self.box_target_position})")
         
         # 📡 发送状态更新
         box_state = {
@@ -655,6 +759,14 @@ class BoxGameCoreOptimized(QObject):
             'path_enabled': self.path_enhancer.is_path_mode_enabled if self.path_enhancer else False
         }
         self.box_state_updated.emit(box_state)
+        
+        # 🕐 计算物理更新时间
+        physics_time = (time.time() - physics_start_time) * 1000  # 转换为毫秒
+        print(f"⚙️ 物理更新时间: {physics_time:.2f}ms (帧 {self.analysis_frame_count})")
+        
+        # 📊 通过数据桥接器发送物理更新时间
+        if hasattr(self, 'data_bridge') and self.data_bridge:
+            self.data_bridge.set_physics_time(physics_time)
 
     def reset_game(self):
         self.box_position = self.box_original_position.copy()
@@ -698,21 +810,7 @@ class BoxGameCoreOptimized(QObject):
         # 🎮 更新智能控制系统参数
         if self.smart_control:
             self.smart_control.update_parameters(params)
-        
-        # 更新分析器参数
-        # 由于现在系统只使用COP，不需要切向力分析器参数
-        # if self.tangential_analyzer:
-        #     if 'pressure_threshold' in params:
-        #         self.tangential_analyzer.pressure_threshold = params['pressure_threshold']
-        #     if 'temporal_window_size' in params:
-        #         self.tangential_analyzer.temporal_window_size = params['temporal_window_size']
-        #     if 'smoothing_factor' in params:
-        #         self.tangential_analyzer.smoothing_factor = params['smoothing_factor']
-        #     if 'cop_movement_threshold' in params:
-        #         self.tangential_analyzer.cop_movement_threshold = params['cop_movement_threshold']
-        #     if 'gradient_threshold' in params:
-        #         self.tangential_analyzer.gradient_threshold = params['gradient_threshold']
-        
+
         print(f"🎮 游戏参数已更新: {list(params.keys())}")
 
     def set_contact_detection_thresholds(self, pressure_threshold=None, contact_area_threshold=None):
@@ -877,6 +975,22 @@ class BoxGameCoreOptimized(QObject):
             return self.path_enhancer.get_completion_stats()
         return {} 
 
+    def handle_mouse_input(self, game_x, game_y):
+        """处理鼠标输入"""
+        try:
+            # 将鼠标坐标转换为游戏坐标
+            # 确保坐标在游戏区域内
+            game_x = np.clip(game_x, 0, self.game_width)
+            game_y = np.clip(game_y, 0, self.game_height)
+            
+            # 更新箱子目标位置
+            self.box_target_position = np.array([game_x, game_y])
+            
+            print(f"🖱️ 鼠标输入处理: 坐标({game_x:.1f}, {game_y:.1f})")
+            
+        except Exception as e:
+            print(f"❌ 鼠标输入处理失败: {e}")
+
 
 class BoxGameMainWindow(QMainWindow):
     """推箱子游戏主窗口（高性能优化版）"""
@@ -898,6 +1012,10 @@ class BoxGameMainWindow(QMainWindow):
         self.last_frame_count = 0
         self.current_actual_fps = 0.0
         
+        # 🕐 新增性能监控器
+        self.performance_monitor = PerformanceMonitor()
+        print("📊 性能监控器已初始化")
+        
         # 🎨 应用深色主题
         if UTILS_AVAILABLE:
             apply_dark_theme(self)
@@ -913,6 +1031,10 @@ class BoxGameMainWindow(QMainWindow):
         self.init_ui()
         self.init_components()
         self.connect_signals()
+        
+        # 🚀 强制设置高性能模式
+        self.set_performance_mode("高性能")
+        
         self.update_initial_status()
         
     def init_ui(self):
@@ -1032,6 +1154,8 @@ class BoxGameMainWindow(QMainWindow):
             self.data_bridge.consensus_angle_updated.connect(self.renderer.update_consensus_angle)
             # 🆕 添加idle分析信号连接
             self.data_bridge.idle_analysis_updated.connect(self.on_idle_analysis_updated)
+            # 🕐 添加物理时间信号连接
+            self.data_bridge.physics_time_updated.connect(self.on_physics_time_updated)
         
         # 游戏核心到渲染器的连接
         if self.renderer:
@@ -1051,6 +1175,27 @@ class BoxGameMainWindow(QMainWindow):
         # 🎨 只设置渲染帧率初始状态
         if self.control_panel:
             self.control_panel.update_status('renderer_fps', 0.0)
+        
+        # 📊 显示性能监控说明
+        print("\n" + "="*50)
+        print("📊 性能监控功能已启用")
+        print("="*50)
+        print("⏱️ 自动监控项目:")
+        print("  - 数据处理时间 (压力数据分析)")
+        print("  - 渲染时间 (图像更新)")
+        print("  - 物理更新时间 (游戏逻辑)")
+        print("  - 总处理时间")
+        print("\n⌨️ 快捷键:")
+        print("  P - 显示性能汇总")
+        print("  R - 重置性能统计")
+        print("  F - 显示帧率配置")
+        print("  G - 强制刷新渲染器")
+        print("  T - 测试渲染器性能")
+        print("  H - 显示帮助信息")
+        print("="*50)
+        
+        # 🕐 显示当前帧率配置
+        self.show_current_frame_rate_config()
     
     def update_actual_fps(self):
         """更新实际帧率显示 - 只更新渲染帧率"""
@@ -1185,14 +1330,42 @@ class BoxGameMainWindow(QMainWindow):
                     # 🚀 更新渲染器性能模式
                     self.renderer.set_performance_mode("高性能")
                 
-                print("⚡ 性能模式已设置为: 高性能")
+                # 🕐 显示当前帧率配置
+                config = FrameRateConfig.get_current_config()
+                print(f"⚡ 性能模式已设置为: 高性能")
+                print(f"📊 当前帧率配置:")
+                print(f"  - 传感器采集: {config['sensor_fps']} FPS (间隔: {1000/config['sensor_fps']:.1f}ms)")
+                print(f"  - 游戏核心: {config['core_fps']} FPS (间隔: {1000/config['core_fps']:.1f}ms)")
+                print(f"  - 渲染器: {config['renderer_fps']} FPS (间隔: {1000/config['renderer_fps']:.1f}ms)")
+                print(f"  - 模拟传感器: {config['simulation_fps']} FPS (间隔: {1000/config['simulation_fps']:.1f}ms)")
+                
         except Exception as e:
             print(f"❌ 设置性能模式失败: {str(e)}")
+    
+    def show_current_frame_rate_config(self):
+        """显示当前帧率配置"""
+        try:
+            config = FrameRateConfig.get_current_config()
+            print(f"\n📊 当前帧率配置 ({FrameRateConfig.current_mode}模式):")
+            print(f"  - 传感器采集: {config['sensor_fps']} FPS (间隔: {1000/config['sensor_fps']:.1f}ms)")
+            print(f"  - 游戏核心: {config['core_fps']} FPS (间隔: {1000/config['core_fps']:.1f}ms)")
+            print(f"  - 渲染器: {config['renderer_fps']} FPS (间隔: {1000/config['renderer_fps']:.1f}ms)")
+            print(f"  - 模拟传感器: {config['simulation_fps']} FPS (间隔: {1000/config['simulation_fps']:.1f}ms)")
+            
+            # 计算理论最大帧率
+            max_fps = min(config['sensor_fps'], config['core_fps'], config['renderer_fps'])
+            print(f"🎯 理论最大帧率: {max_fps} FPS")
+            
+        except Exception as e:
+            print(f"❌ 获取帧率配置失败: {str(e)}")
     
     @pyqtSlot(np.ndarray)
     def on_sensor_data_received(self, pressure_data):
         """处理传感器数据"""
         try:
+            # 🕐 开始测量总处理时间
+            total_start_time = time.time()
+            
             # 更新数据桥接器
             self.data_bridge.set_pressure_data(pressure_data)
             
@@ -1201,9 +1374,32 @@ class BoxGameMainWindow(QMainWindow):
             result = self.game_core.process_pressure_data(pressure_data)
             print(f"🖥️ 主窗口: 游戏核心处理完成, 结果={result}")
             
+            # 🕐 测量渲染时间
+            render_start_time = time.time()
+            
             # 更新渲染器
             if self.renderer:
                 self.renderer.update_pressure_data(pressure_data)
+            
+            # 🕐 计算渲染时间
+            render_time = (time.time() - render_start_time) * 1000  # 转换为毫秒
+            total_time = (time.time() - total_start_time) * 1000  # 转换为毫秒
+            
+            # 获取数据处理时间
+            processing_time = result.get('processing_time_ms', 0) if result else 0
+            
+            # 📊 记录到性能监控器
+            self.performance_monitor.add_processing_time(processing_time)
+            self.performance_monitor.add_render_time(render_time)
+            self.performance_monitor.add_total_time(total_time)
+            
+            print(f"🎨 渲染时间: {render_time:.2f}ms")
+            print(f"📊 总处理时间: {total_time:.2f}ms (数据处理: {processing_time:.2f}ms + 渲染: {render_time:.2f}ms)")
+            print(f"📈 性能分析 - 帧 {result.get('frame_count', 0) if result else 0}: 处理={processing_time:.2f}ms, 渲染={render_time:.2f}ms, 总计={total_time:.2f}ms")
+            
+            # 🕐 每100帧打印一次性能汇总
+            if self.performance_monitor.frame_count % 100 == 0 and self.performance_monitor.frame_count > 0:
+                self.performance_monitor.print_performance_summary()
             
         except Exception as e:
             print(f"❌ 处理传感器数据失败: {str(e)}")
@@ -1217,9 +1413,15 @@ class BoxGameMainWindow(QMainWindow):
     def on_game_state_changed(self, state_info):
         """处理游戏状态变化 - 更新渲染器和控制面板"""
         try:
+            # 🕐 测量游戏状态更新渲染时间
+            state_render_start_time = time.time()
+            
             # 更新渲染器
             if self.renderer:
                 self.renderer.update_game_state(state_info)
+            
+            # 🕐 计算游戏状态渲染时间
+            state_render_time = (time.time() - state_render_start_time) * 1000  # 转换为毫秒
             
             # 更新数据桥接器
             self.data_bridge.set_analysis_results(state_info)
@@ -1229,7 +1431,16 @@ class BoxGameMainWindow(QMainWindow):
                 control_mode = state_info.get('control_mode', 'unknown')
                 self.control_panel.update_status('control_mode', control_mode)
             
+            # 获取帧号和处理时间
+            frame_count = state_info.get('frame_count', 0)
+            processing_time = state_info.get('processing_time_ms', 0)
+            
             print(f"🎮 游戏状态: {state_info.get('control_mode', 'unknown')}")
+            print(f"🎨 游戏状态渲染时间: {state_render_time:.2f}ms (帧 {frame_count})")
+            
+            # 如果有处理时间信息，显示完整的性能分析
+            if processing_time > 0:
+                print(f"📈 完整性能分析 - 帧 {frame_count}: 数据处理={processing_time:.2f}ms, 状态渲染={state_render_time:.2f}ms")
             
         except Exception as e:
             print(f"❌ 处理游戏状态变化失败: {str(e)}")
@@ -1317,6 +1528,12 @@ class BoxGameMainWindow(QMainWindow):
     def on_visualization_changed(self, options):
         """处理可视化选项变化"""
         if self.renderer:
+            # 🎨 处理热力图模式切换
+            if 'toggle_heatmap_mode' in options:
+                self.renderer.toggle_heatmap_mode()
+                print("🎨 热力图模式已切换")
+                return
+            
             # 🎨 处理3D渲染选项
             if any(key in options for key in ['enable_3d_lighting', 'enable_3d_shadows', 'enable_3d_animation', 
                                             'elevation_3d', 'azimuth_3d', 'rotation_speed_3d', 
@@ -1341,11 +1558,23 @@ class BoxGameMainWindow(QMainWindow):
                 success = self.game_core.enable_path_mode(path_name)
                 if success:
                     print(f"🗺️ 路径模式已启用: {path_name}")
+                    # 🎨 设置渲染器路径引导模式
+                    if self.renderer:
+                        self.renderer.set_path_guide_mode(True)
+                        # 🆕 启用引导模式，允许切换到2D
+                        self.renderer.set_guide_mode(True)
+                        print("🎨 引导模式已启用，可以切换到2D渲染")
                 else:
                     print(f"❌ 路径模式启用失败: {path_name}")
             else:
                 self.game_core.disable_path_mode()
                 print("🗺️ 路径模式已禁用")
+                # 🎨 关闭渲染器路径引导模式
+                if self.renderer:
+                    self.renderer.set_path_guide_mode(False)
+                    # 🆕 禁用引导模式，保持当前渲染模式
+                    self.renderer.set_guide_mode(False)
+                    print("🎨 引导模式已禁用，保持当前渲染模式")
         except Exception as e:
             print(f"❌ 路径模式操作失败: {str(e)}")
     
@@ -1362,6 +1591,64 @@ class BoxGameMainWindow(QMainWindow):
         """窗口关闭事件"""
         self.disconnect_sensor()
         event.accept()
+    
+    def keyPressEvent(self, event):
+        """键盘事件处理"""
+        try:
+            # 按 'P' 键显示性能汇总
+            if event.key() == Qt.Key_P:
+                print("\n🔍 手动触发性能汇总...")
+                self.performance_monitor.print_performance_summary()
+            # 按 'R' 键重置性能统计
+            elif event.key() == Qt.Key_R:
+                print("\n🔄 重置性能统计...")
+                self.performance_monitor = PerformanceMonitor()
+                print("✅ 性能统计已重置")
+            # 按 'F' 键显示帧率配置
+            elif event.key() == Qt.Key_F:
+                print("\n📊 显示帧率配置...")
+                self.show_current_frame_rate_config()
+            # 按 'G' 键强制刷新渲染器
+            elif event.key() == Qt.Key_G:
+                print("\n🔄 强制刷新渲染器...")
+                if self.renderer:
+                    self.renderer.force_refresh()
+                else:
+                    print("❌ 渲染器不可用")
+            # 按 'T' 键测试渲染器性能
+            elif event.key() == Qt.Key_T:
+                print("\n🧪 测试渲染器性能...")
+                if self.renderer:
+                    self.renderer.test_renderer_performance()
+                else:
+                    print("❌ 渲染器不可用")
+            # 按 'H' 键显示帮助信息
+            elif event.key() == Qt.Key_H:
+                print("\n" + "="*50)
+                print("🎮 推箱子游戏 - 性能监控快捷键")
+                print("="*50)
+                print("P - 显示性能汇总")
+                print("R - 重置性能统计")
+                print("F - 显示帧率配置")
+                print("G - 强制刷新渲染器")
+                print("T - 测试渲染器性能")
+                print("H - 显示帮助信息")
+                print("="*50)
+            else:
+                super().keyPressEvent(event)
+        except Exception as e:
+            print(f"❌ 键盘事件处理失败: {str(e)}")
+            super().keyPressEvent(event)
+    
+    @pyqtSlot(float)
+    def on_physics_time_updated(self, physics_time_ms):
+        """处理物理时间更新"""
+        try:
+            # 📊 记录到性能监控器
+            self.performance_monitor.add_physics_time(physics_time_ms)
+            print(f"⚙️ 物理时间已记录: {physics_time_ms:.2f}ms")
+        except Exception as e:
+            print(f"❌ 处理物理时间更新失败: {str(e)}")
 
 def main():
     """主函数"""

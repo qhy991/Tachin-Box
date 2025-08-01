@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-推箱子游戏渲染器模块（高性能优化版）
-Renderer Module for Box Push Game (Optimized Version)
+推箱子游戏渲染器模块（PyQtGraph优化版）
+Renderer Module for Box Push Game (PyQtGraph Optimized Version)
 
 本模块负责游戏状态的可视化渲染，包括压力分布、游戏区域、COP轨迹等。
-现在集成了utils.py的功能，提供更好的颜色映射和主题支持。
+现在使用PyQtGraph替代matplotlib，提供更好的性能和交互性。
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.colors import LinearSegmentedColormap
+import pyqtgraph as pg
+from pyqtgraph.opengl import GLViewWidget, GLSurfacePlotItem, GLGridItem, GLLinePlotItem
+from pyqtgraph import GraphicsLayoutWidget, PlotWidget
+import pyqtgraph.opengl as gl  # 添加别名导入
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSizePolicy
 from PyQt5.QtGui import QFont, QPalette, QColor
 import sys
 import os
@@ -52,36 +52,45 @@ except ImportError:
     PATH_PLANNING_AVAILABLE = False
     print("⚠️ 路径规划模块未找到，禁用路径功能")
 
-# Matplotlib 相关导入
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.patches import Rectangle, Circle, FancyBboxPatch, Arrow, Polygon
-from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.animation import FuncAnimation
+# PyQtGraph 相关导入
+import pyqtgraph as pg
+from pyqtgraph.opengl import GLViewWidget, GLSurfacePlotItem, GLGridItem, GLLinePlotItem
+from pyqtgraph import GraphicsLayoutWidget, PlotWidget
 
 try:
     from .path_visualization_manager import PathVisualizationManager
 except ImportError:
     from path_visualization_manager import PathVisualizationManager
 
-class BoxGameRenderer(FigureCanvas):
-    """推箱子游戏渲染器 - 高性能优化版"""
+# 🆕 导入帧级性能分析器
+try:
+    from .frame_performance_analyzer import (
+        FramePerformanceAnalyzer, 
+        start_frame_measurement, 
+        end_frame_measurement, 
+        stage_timer,
+        get_global_analyzer
+    )
+    PERFORMANCE_ANALYZER_AVAILABLE = True
+    print("✅ 帧级性能分析器已集成")
+except ImportError as e:
+    print(f"⚠️ 帧级性能分析器不可用: {e}")
+    PERFORMANCE_ANALYZER_AVAILABLE = False
+
+class BoxGameRenderer(QWidget):
+    """推箱子游戏渲染器 - PyQtGraph优化版"""
     
     # 信号定义
     mouse_pressed = pyqtSignal(float, float)
     animation_finished = pyqtSignal()
     
     def __init__(self, parent=None):
-        # 🔧 初始化 matplotlib 画布
-        self.fig = Figure(figsize=(12, 8), facecolor='black')
-        super().__init__(self.fig)
-        self.setParent(parent)
+        super().__init__(parent)
         
         # 🎮 游戏状态数据
-        self.box_position = np.array([0.0, 0.0])
-        self.box_target_position = np.array([0.0, 0.0])
-        self.box_size = 0.8
+        self.box_position = np.array([32.0, 32.0])  # 修改为游戏区域中心
+        self.box_target_position = np.array([50.0, 50.0])  # 修改目标位置
+        self.box_size = 3.2  # 增大4倍，从0.8改为3.2（虽然不影响渲染）
         self.current_cop = None
         self.initial_cop = None
         self.movement_distance = 0.0
@@ -89,6 +98,9 @@ class BoxGameRenderer(FigureCanvas):
         # 🎮 控制状态
         self.current_control_mode = 'idle'
         self.current_system_mode = 'touchpad_only'  # 默认触控板模式
+        
+        # 🗺️ 路径引导模式状态
+        self.is_path_guide_mode = False  # 新增：路径引导模式标志
         
         # 🔄 Idle状态计数器 - 用于清除路径痕迹
         self.idle_frame_count = 0
@@ -112,13 +124,12 @@ class BoxGameRenderer(FigureCanvas):
         self.pressure_data = None
         self.pressure_colormap = 'plasma'
         
-        # 🔄 渲染对象 - 添加压力图像和颜色条的引用
-        self.box_patch = None
-        self.cop_marker = None
-        self.initial_cop_marker = None
-        self.force_arrow = None
-        self.pressure_image = None
-        self.pressure_colorbar = None
+        # 🔄 渲染对象 - PyQtGraph版本
+        self.game_plot_widget = None
+        self.pressure_3d_widget = None
+        self.pressure_2d_widget = None
+        self.pressure_surface_item = None
+        self.pressure_image_item = None
         
         # 📈 历史轨迹
         self.cop_history = deque(maxlen=50)
@@ -132,7 +143,7 @@ class BoxGameRenderer(FigureCanvas):
         self.animation_speed = 0.1
         self.force_scale = 1.0
         
-        # 🗺️ 路径可视化管理器 - 在setup_subplots之后初始化
+        # 🗺️ 路径可视化管理器 - 在setup_layout之后初始化
         self.path_manager = None
         
         # 🔄 更新定时器 - 使用动态帧率配置
@@ -162,9 +173,9 @@ class BoxGameRenderer(FigureCanvas):
         ]
         
         # 📊 颜色范围控制
-        self.log_y_lim = [0.0, 0.005]  # 调整为更小的压力范围，提高精度
+        self.log_y_lim = [0.0, 0.005]  # 固定为0-0.005范围
         self.minimum_y_lim = 0.0
-        self.maximum_y_lim = 0.005  # 调整最大值为0.005
+        self.maximum_y_lim = 0.005  # 固定最大值为0.005
         
         # 🎨 高斯模糊参数
         self.gaussian_sigma = 1.0  # 高斯模糊的标准差
@@ -172,6 +183,10 @@ class BoxGameRenderer(FigureCanvas):
         # 🆕 3D显示参数 - 增强版
         self.show_3d_heatmap = True  # 默认显示3D
         self.heatmap_view_mode = '3d'  # '2d' 或 '3d'
+        
+        # 🔇 噪声过滤参数 - 新增
+        self.noise_filter_threshold = 0.0005  # 默认噪声阈值
+        self.noise_filter_sigma = 0.8  # 默认高斯模糊强度
         
         # 🎨 3D渲染增强参数
         self.enable_3d_lighting = True  # 启用3D光照
@@ -209,18 +224,30 @@ class BoxGameRenderer(FigureCanvas):
         self._pressure_data_changed = False    # 压力数据变化标志
         self._preprocessed_cache = None        # 预处理缓存
         
-        # 🎨 子图配置
-        self.setup_subplots()
+        # 🆕 性能分析器集成
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            self.performance_analyzer = get_global_analyzer()
+            # 连接性能分析器信号
+            self.performance_analyzer.performance_updated.connect(self.on_performance_updated)
+            self.performance_analyzer.bottleneck_detected.connect(self.on_bottleneck_detected)
+            self.performance_analyzer.performance_warning.connect(self.on_performance_warning)
+            print("✅ 渲染器性能分析器已连接")
+        else:
+            self.performance_analyzer = None
+            print("⚠️ 渲染器性能分析器不可用")
+        
+        # 🎨 设置布局
+        self.setup_layout()
         
         # 🗺️ 初始化路径可视化管理器
         try:
-            self.path_manager = PathVisualizationManager(self.ax_game)
+            self.path_manager = PathVisualizationManager(self.game_plot_widget)
         except Exception as e:
             print(f"⚠️ 路径可视化管理器初始化失败: {e}")
             self.path_manager = None
         
-        # 🖱️ 鼠标事件
-        self.mpl_connect('button_press_event', self.on_mouse_press)
+        # 🖱️ 鼠标事件 - 在布局设置后立即设置
+        self.setup_mouse_events()
         
         # 🔄 初始化界面布局为简化模式
         self.update_interface_layout('simplified')
@@ -239,32 +266,162 @@ class BoxGameRenderer(FigureCanvas):
         self.debug_level = 0  # 0=无调试, 1=重要事件, 2=详细信息, 3=全部调试
         self.debug_counter = 0  # 用于控制调试输出频率
         
-        # 🔧 初始化子图
-        self.setup_subplots()
-        
-        # 🗺️ 初始化路径可视化管理器
-        if PATH_PLANNING_AVAILABLE:
-            self.path_manager = PathVisualizationManager(self.ax_game)
-        
-        # 🎨 设置子图属性
-        self.setup_subplot_properties()
+        # 🎨 设置PyQtGraph样式
+        self.setup_pyqtgraph_style()
         
         # 🔄 启动渲染循环
         self.start_rendering()
         
-        print("✅ BoxGameRenderer 初始化完成")
+        # 🧪 添加测试压力数据以确保渲染器正常工作
+        self.add_test_pressure_data()
+        
+        # 🔄 延迟强制刷新显示，确保PyQtGraph组件完全加载
+        QTimer.singleShot(100, self.force_refresh_display)
+        
+        print("✅ BoxGameRenderer (PyQtGraph版) 初始化完成")
+        
+        # 🔧 设置y轴方向 - 确保y轴朝下
+        self.force_set_y_axis_direction()
+        
+        # 🎨 设置3D显示选项 - 使用新的参数让3D区域更大
+        self.set_3d_display_options(
+            grid_scale=5.0,      # 进一步增大到50.0让3D区域更大
+            camera_distance=200,    # 进一步减小到8让视角更近
+            camera_elevation=25,  # 相机仰角
+            camera_azimuth=45,    # 相机方位角
+            enhancement_factor=3000  # 增强因子
+        )
+        
+        # 🎨 设置2D热力图平滑参数
+        self.set_2d_smoothing_options(gaussian_sigma=0.0)
+        
+        # 🎨 设置轨迹平滑参数
+        self.set_trajectory_smoothing_options(window_size=5, sigma=1.0)
+        
+        # 🎨 重置3D相机位置到最佳视角
+        self.reset_3d_camera_position()
+        
+        # 🔄 强制刷新状态文本显示
+        print("🔄 强制刷新状态文本显示")
+        self.render_status_text()
+    
+    def force_refresh_display(self):
+        """强制刷新显示"""
+        try:
+            print("🔄 强制刷新显示")
+            
+            # 检查视图状态
+            print(f"🔍 当前视图状态:")
+            print(f"  - 热力图模式: {self.heatmap_view_mode}")
+            print(f"  - 3D视图可见: {self.pressure_3d_widget.isVisible()}")
+            print(f"  - 2D视图可见: {self.pressure_2d_widget.isVisible()}")
+            print(f"  - 压力数据: {self.pressure_data is not None}")
+            if self.pressure_data is not None:
+                print(f"  - 压力数据形状: {self.pressure_data.shape}")
+                print(f"  - 压力数据范围: [{self.pressure_data.min():.6f}, {self.pressure_data.max():.6f}]")
+            
+            # 强制更新压力视图可见性
+            self.update_pressure_view_visibility()
+            
+            # 🖱️ 重新设置鼠标事件，确保传感器连接后缩放功能正常
+            self.setup_mouse_events()
+            
+            # 如果有压力数据，强制重新渲染
+            if self.pressure_data is not None:
+                print("🔄 强制重新渲染压力数据")
+                self.pressure_data_changed = True
+                self._pressure_data_changed = True
+                # 立即更新一次
+                self.update_pressure_only()
+                
+                # 强制刷新视图
+                if self.heatmap_view_mode == '3d':
+                    self.pressure_3d_widget.update()
+                else:
+                    self.pressure_2d_widget.update()
+            
+            # 强制更新游戏区域
+            self.game_state_changed = True
+            self.update_game_area_only()
+            
+            # 强制更新布局
+            self.update()
+            
+            print("✅ 强制刷新显示完成")
+            
+        except Exception as e:
+            print(f"⚠️ 强制刷新显示失败: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def add_test_pressure_data(self):
+        """添加测试压力数据以确保渲染器正常工作"""
+        try:
+            # 创建一个64x64的测试压力数据
+            test_data = np.zeros((64, 64))
+            
+            # 在中心区域添加一些压力
+            center_x, center_y = 32, 32  # 改回32，因为数据是64x64
+            for i in range(64):
+                for j in range(64):
+                    distance = np.sqrt((i - center_x)**2 + (j - center_y)**2)
+                    if distance < 15:
+                        test_data[i, j] = 0.003 * np.exp(-distance / 10)
+            
+            print("🧪 添加测试压力数据")
+            print(f"🧪 测试数据范围: [{test_data.min():.6f}, {test_data.max():.6f}]")
+            self.update_pressure_data(test_data)
+            
+            # 强制刷新显示
+            QTimer.singleShot(200, self.force_refresh_display)
+            
+        except Exception as e:
+            print(f"⚠️ 测试压力数据添加失败: {e}")
+    
+    # 🆕 性能分析器回调函数
+    def on_performance_updated(self, performance_data):
+        """处理性能数据更新"""
+        if self.debug_level >= 2:
+            print(f"📊 性能更新: 帧{performance_data['frame_id']}, "
+                  f"FPS={performance_data['metrics']['current_fps']:.1f}, "
+                  f"渲染={performance_data['timing']['rendering']*1000:.2f}ms")
+    
+    def on_bottleneck_detected(self, stage, time_value):
+        """处理瓶颈检测"""
+        print(f"⚠️ 性能瓶颈检测: {stage} 阶段耗时 {time_value*1000:.2f}ms")
+    
+    def on_performance_warning(self, stage, time_value):
+        """处理性能警告"""
+        print(f"🚨 性能警告: {stage} 阶段耗时 {time_value*1000:.2f}ms 超过阈值")
     
     def keyPressEvent(self, event):
-        """键盘事件处理 - 集成F11全屏切换"""
+        """键盘事件处理 - 集成F11全屏切换和热力图模式切换"""
         if UTILS_AVAILABLE:
             # 检查是否是F11键
             if event.key() == Qt.Key_F11 and not event.isAutoRepeat():
                 self.toggle_fullscreen()
+            # 检查是否是H键（切换热力图模式）
+            elif event.key() == Qt.Key_H and not event.isAutoRepeat():
+                print("🎨 用户按下H键，切换热力图模式")
+                self.toggle_heatmap_mode()
+            # 检查是否是R键（重置视图）
+            elif event.key() == Qt.Key_R and not event.isAutoRepeat():
+                print("🔄 用户按下R键，重置视图")
+                self.reset_view()
             else:
                 # 确保事件正确传递
                 super().keyPressEvent(event)
         else:
-            super().keyPressEvent(event)
+            # 检查是否是H键（切换热力图模式）
+            if event.key() == Qt.Key_H and not event.isAutoRepeat():
+                print("🎨 用户按下H键，切换热力图模式")
+                self.toggle_heatmap_mode()
+            # 检查是否是R键（重置视图）
+            elif event.key() == Qt.Key_R and not event.isAutoRepeat():
+                print("🔄 用户按下R键，重置视图")
+                self.reset_view()
+            else:
+                super().keyPressEvent(event)
     
     def toggle_fullscreen(self):
         """切换全屏模式"""
@@ -304,67 +461,412 @@ class BoxGameRenderer(FigureCanvas):
         self.debug_level = max(0, min(3, level))
         print(f"🔧 调试级别已设置为: {self.debug_level}")
     
-    def setup_subplots(self):
-        """设置子图布局 - 扩大压力分布显示区域"""
-        self.fig.clear()
+    def setup_layout(self):
+        """设置PyQtGraph布局"""
+        # 创建主布局
+        main_layout = QHBoxLayout()
+        self.setLayout(main_layout)
         
-        # 🔥 主游戏区域 - 使用64x64传感器原始坐标系
-        self.ax_game = self.fig.add_subplot(1, 5, (1, 2))  # 改为1行5列，游戏区域占2/5
-        self.ax_game.set_title("推箱子游戏 - 实时传感器", fontsize=14, color='white', fontweight='bold')
-        self.ax_game.set_xlim(0, 63)
-        self.ax_game.set_ylim(63, 0)  # 🔄 Y轴反转：传感器坐标系Y轴向下
-        self.ax_game.set_aspect('equal')
-        self.ax_game.grid(True, alpha=0.3, color='gray')
-        self.ax_game.set_facecolor('black')
+        # 🔥 主游戏区域 - 使用PyQtGraph PlotWidget
+        game_layout = QVBoxLayout()
+        game_label = QLabel("推箱子游戏 - 实时传感器")
+        game_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
+        game_layout.addWidget(game_label)
         
-        # 📊 压力分布子图 - 扩大显示区域
-        self.ax_pressure = self.fig.add_subplot(1, 5, (3, 5))  # 压力分布占3/5宽度
-        self.ax_pressure.set_title("压力分布", fontsize=12, fontweight='bold')
-        # 🎨 去除轴标签，因为2D模式不需要显示坐标轴
-        # self.ax_pressure.set_xlabel("X")
-        # self.ax_pressure.set_ylabel("Y")
+        self.game_plot_widget = pg.PlotWidget()
+        self.game_plot_widget.setBackground('k')
+        self.game_plot_widget.setAspectLocked(True)
+        # 参考test_y_axis.py的方式设置y轴
+        self.game_plot_widget.invertY(True)  # Y轴朝下
+        self.game_plot_widget.setXRange(0, 63, padding=0)
+        self.game_plot_widget.setYRange(0, 63, padding=0)  # 范围改为0-63，无padding
+        self.game_plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
-        # 🎨 统一样式
-        for ax in [self.ax_game, self.ax_pressure]:
-            ax.tick_params(colors='white', labelsize=8)
-            for spine in ax.spines.values():
-                spine.set_color('white')
+        game_layout.addWidget(self.game_plot_widget)
         
-        # 🔧 优化布局 - 调整间距和比例
-        self.fig.subplots_adjust(
-            left=0.03,      # 减少左边距
-            right=0.97,     # 减少右边距
-            top=0.92,       # 减少上边距
-            bottom=0.08,    # 减少下边距
-            wspace=0.25     # 减少子图间距
-        )
+        main_layout.addLayout(game_layout, 2)  # 游戏区域占2/5
+        
+        # 📊 压力分布区域
+        pressure_layout = QVBoxLayout()
+        pressure_label = QLabel("压力分布")
+        pressure_label.setStyleSheet("color: white; font-weight: bold; font-size: 12px;")
+        pressure_layout.addWidget(pressure_label)
+        
+        # 创建压力视图容器 - 用于切换2D/3D视图
+        self.pressure_container = QWidget()
+        self.pressure_container_layout = QVBoxLayout()
+        self.pressure_container.setLayout(self.pressure_container_layout)
+        
+        # 3D压力视图
+        self.pressure_3d_widget = GLViewWidget()
+        self.pressure_3d_widget.setBackgroundColor('k')  # 改为黑色背景
+        self.pressure_3d_widget.setMinimumSize(600, 450)  # 增大最小尺寸
+        self.pressure_3d_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 允许扩展
+        # 调整相机位置以显示完整的64x64数据区域 - 使用更近的距离
+        self.pressure_3d_widget.setCameraPosition(distance=8, elevation=25, azimuth=45)
+        # 确保3D视图嵌入在主界面中，不弹出独立窗口
+        self.pressure_3d_widget.setParent(self.pressure_container)
+        self.pressure_3d_widget.setWindowFlags(Qt.Widget)  # 确保不是独立窗口
+        print("🎨 3D压力视图已创建")
+        
+        # 2D压力视图
+        self.pressure_2d_widget = pg.PlotWidget()
+        self.pressure_2d_widget.setBackground('k')
+        self.pressure_2d_widget.setMinimumSize(600, 450)  # 增大最小尺寸
+        self.pressure_2d_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 允许扩展
+        self.pressure_2d_widget.setAspectLocked(True)
+        # 参考test_y_axis.py的方式设置y轴
+        self.pressure_2d_widget.invertY(True)  # Y轴朝下
+        self.pressure_2d_widget.setXRange(0, 63, padding=0)
+        self.pressure_2d_widget.setYRange(0, 63, padding=0)  # 范围改为0-63，无padding
+        # 确保2D视图嵌入在主界面中
+        self.pressure_2d_widget.setParent(self.pressure_container)
+        
+        print("🎨 2D压力视图已创建")
+        
+        # 将容器添加到压力布局
+        pressure_layout.addWidget(self.pressure_container,1)
+        
+        # 根据初始模式设置可见性 - 默认使用3D模式
+        self.heatmap_view_mode = '3d'  # 强制使用3D模式
+        self.update_pressure_view_visibility()
+        
+        # 🧪 强制刷新压力视图
+        self.force_refresh_pressure_view()
+        
+        main_layout.addLayout(pressure_layout, 3)  # 压力分布占3/5
+        
+        # 设置样式
+        self.setup_pyqtgraph_style()
+        
+        print("✅ PyQtGraph布局设置完成")
+        print(f"🎨 初始热力图模式: {self.heatmap_view_mode}")
+        print(f"🎨 3D视图可见: {self.pressure_3d_widget.isVisible()}")
+        print(f"🎨 2D视图可见: {self.pressure_2d_widget.isVisible()}")
+        
+        # 🔧 强制设置y轴方向 - 确保y轴值越往上越小
+        self.force_set_y_axis_direction()
+    
+    def force_set_y_axis_direction(self):
+        """强制设置y轴方向 - 确保y轴朝下，范围0-63"""
+        try:
+            print("🔧 强制设置y轴方向")
+            
+            # 设置游戏区域y轴方向 - 参考test_y_axis.py的方式
+            self.game_plot_widget.invertY(True)  # Y轴朝下
+            self.game_plot_widget.setXRange(0, 63, padding=0)
+            self.game_plot_widget.setYRange(0, 63, padding=0)  # 范围改为0-63，无padding
+            
+            # 🔧 强制锁定游戏区域的Y轴范围，防止被其他代码修改
+            self.game_plot_widget.getViewBox().setLimits(yMin=0, yMax=63)
+            self.game_plot_widget.getViewBox().setYRange(0, 63, padding=0)
+            
+            print(f"🔧 游戏区域y轴设置: {self.game_plot_widget.getViewBox().viewRange()}")
+            
+            # 设置2D压力视图y轴方向 - 确保与游戏区域一致
+            self.pressure_2d_widget.invertY(True)  # Y轴朝下，与游戏区域一致
+            self.pressure_2d_widget.setXRange(0, 63, padding=0)
+            self.pressure_2d_widget.setYRange(0, 63, padding=0)
+            # 🔧 强制锁定2D压力视图的Y轴范围，防止被其他代码修改
+            self.pressure_2d_widget.getViewBox().setLimits(yMin=0, yMax=63)
+            self.pressure_2d_widget.getViewBox().setYRange(0, 63, padding=0)
+            
+            print(f"🔧 2D压力视图y轴设置: {self.pressure_2d_widget.getViewBox().viewRange()}")
+        except Exception as e:
+            print(f"❌ 强制设置y轴方向失败: {e}")
+    
+    def force_refresh_pressure_view(self):
+        """强制刷新压力视图"""
+        try:
+            print("🔄 强制刷新压力视图")
+            
+            # 确保视图可见
+            if self.heatmap_view_mode == '3d':
+                self.pressure_3d_widget.setVisible(True)
+                self.pressure_2d_widget.setVisible(False)
+            else:
+                self.pressure_3d_widget.setVisible(False)
+                self.pressure_2d_widget.setVisible(True)
+            
+            # 强制设置y轴方向
+            self.force_set_y_axis_direction()
+            
+            # 强制更新布局
+            self.pressure_container.update()
+            
+            # 如果有压力数据，强制重新渲染
+            if self.pressure_data is not None:
+                print("🔄 强制重新渲染压力数据")
+                self.pressure_data_changed = True
+                self._pressure_data_changed = True
+                # 立即更新一次
+                self.update_pressure_only()
+            
+            print("✅ 压力视图强制刷新完成")
+            
+        except Exception as e:
+            print(f"⚠️ 强制刷新压力视图失败: {e}")
+    
+    def update_pressure_view_visibility(self):
+        """更新压力视图的可见性"""
+        print(f"🔍 更新压力视图可见性: 当前模式={self.heatmap_view_mode}")
+        
+        # 清除容器中的所有视图
+        while self.pressure_container_layout.count():
+            child = self.pressure_container_layout.takeAt(0)
+            if child.widget():
+                child.widget().setParent(None)
+        
+        # 根据模式添加相应的视图到同一个位置
+        if self.heatmap_view_mode == '3d':
+            print("🎨 切换到3D视图")
+            # 确保3D视图正确嵌入
+            self.pressure_3d_widget.setParent(self.pressure_container)
+            self.pressure_3d_widget.setVisible(True)
+            self.pressure_2d_widget.setVisible(False)
+            self.pressure_container_layout.addWidget(self.pressure_3d_widget)
+            
+            # 强制设置3D视图大小和属性
+            self.pressure_3d_widget.setMinimumSize(400, 300)
+            self.pressure_3d_widget.resize(400, 300)
+            self.pressure_3d_widget.setWindowFlags(Qt.Widget)  # 确保不是独立窗口
+        else:
+            print("🎨 切换到2D视图")
+            # 确保2D视图正确嵌入
+            self.pressure_2d_widget.setParent(self.pressure_container)
+            self.pressure_3d_widget.setVisible(False)
+            self.pressure_2d_widget.setVisible(True)
+            self.pressure_container_layout.addWidget(self.pressure_2d_widget)
+            
+            # 强制设置2D视图大小
+            self.pressure_2d_widget.setMinimumSize(400, 300)
+            self.pressure_2d_widget.resize(400, 300)
+        
+        print(f"🎨 3D视图可见: {self.pressure_3d_widget.isVisible()}")
+        print(f"🎨 2D视图可见: {self.pressure_2d_widget.isVisible()}")
+        
+        # 强制重新渲染压力分布
+        if self.pressure_data is not None:
+            print("🔄 强制重新渲染压力分布")
+            self.pressure_data_changed = True
+            self._pressure_data_changed = True
+            
+            # 立即更新一次
+            self.update_pressure_only()
+        
+        # 强制更新布局
+        self.pressure_container.update()
+        self.update()
+    
+    def setup_pyqtgraph_style(self):
+        """设置PyQtGraph样式"""
+        # 设置PyQtGraph全局样式
+        pg.setConfigOptions(antialias=True)
+        pg.setConfigOption('background', 'k')
+        pg.setConfigOption('foreground', 'w')
+        
+        # 设置游戏区域样式
+        if self.game_plot_widget:
+            self.game_plot_widget.setBackground('k')
+            self.game_plot_widget.getAxis('left').setTextPen('w')
+            self.game_plot_widget.getAxis('bottom').setTextPen('w')
+            self.game_plot_widget.getAxis('left').setPen('w')
+            self.game_plot_widget.getAxis('bottom').setPen('w')
+        
+        # 设置2D压力区域样式
+        if self.pressure_2d_widget:
+            self.pressure_2d_widget.setBackground('k')
+            self.pressure_2d_widget.getAxis('left').setTextPen('w')
+            self.pressure_2d_widget.getAxis('bottom').setTextPen('w')
+            self.pressure_2d_widget.getAxis('left').setPen('w')
+            self.pressure_2d_widget.getAxis('bottom').setPen('w')
+    
+    def setup_mouse_events(self):
+        """设置鼠标事件 - 2D视图支持交互，3D视图在首次创建时设置"""
+        if self.game_plot_widget:
+            # 启用2D游戏区域的鼠标交互
+            view_box = self.game_plot_widget.getViewBox()
+            view_box.setMouseEnabled(x=True, y=True)
+            view_box.setMouseMode(view_box.RectMode)  # 启用矩形选择模式，支持拖拽缩放
+            # 连接鼠标点击事件
+            self.game_plot_widget.scene().sigMouseClicked.connect(self.on_mouse_press)
+            print("✅ 游戏区域鼠标事件已设置: 支持拖拽缩放")
+        
+        # 为2D压力视图也启用鼠标交互
+        if self.pressure_2d_widget:
+            view_box = self.pressure_2d_widget.getViewBox()
+            view_box.setMouseEnabled(x=True, y=True)
+            view_box.setMouseMode(view_box.RectMode)  # 启用矩形选择模式，支持拖拽缩放
+            print("✅ 2D压力视图鼠标事件已设置: 支持拖拽缩放")
+    
+    def ensure_mouse_interaction_enabled(self):
+        """确保鼠标交互设置不被覆盖 - 2D视图保持交互，3D视图保持稳定"""
+        try:
+            # 检查并确保游戏区域的鼠标交互保持启用
+            if self.game_plot_widget:
+                view_box = self.game_plot_widget.getViewBox()
+                if not view_box.mouseEnabled()[0] or not view_box.mouseEnabled()[1]:
+                    print("🖱️ 重新启用游戏区域鼠标交互")
+                    view_box.setMouseEnabled(x=True, y=True)
+                    view_box.setMouseMode(view_box.RectMode)
+            
+            # 检查并确保2D压力视图的鼠标交互保持启用
+            if self.pressure_2d_widget:
+                view_box = self.pressure_2d_widget.getViewBox()
+                if not view_box.mouseEnabled()[0] or not view_box.mouseEnabled()[1]:
+                    print("🖱️ 重新启用2D压力视图鼠标交互")
+                    view_box.setMouseEnabled(x=True, y=True)
+                    view_box.setMouseMode(view_box.RectMode)
+                    
+        except Exception as e:
+            print(f"⚠️ 确保鼠标交互启用失败: {e}")
+    
+    def on_mouse_press(self, event):
+        """处理鼠标点击事件"""
+        if event.button() == 1:  # 左键点击
+            pos = self.game_plot_widget.getViewBox().mapSceneToView(event.scenePos())
+            self.mouse_pressed.emit(pos.x(), pos.y())
+    
+    def on_view_range_changed(self, view_box, ranges):
+        """处理游戏区域视图范围变化"""
+        try:
+            x_range, y_range = ranges
+            print(f"🎮 游戏区域视图范围变化: X=[{x_range[0]:.1f}-{x_range[1]:.1f}], Y=[{y_range[0]:.1f}-{y_range[1]:.1f}]")
+        except Exception as e:
+            print(f"⚠️ 处理游戏区域视图范围变化失败: {e}")
+    
+    def on_pressure_view_range_changed(self, view_box, ranges):
+        """处理压力视图范围变化"""
+        try:
+            x_range, y_range = ranges
+            print(f"📊 压力视图范围变化: X=[{x_range[0]:.1f}-{x_range[1]:.1f}], Y=[{y_range[0]:.1f}-{y_range[1]:.1f}]")
+        except Exception as e:
+            print(f"⚠️ 处理压力视图范围变化失败: {e}")
+    
+    def on_mouse_wheel(self, event):
+        """处理游戏区域的鼠标滚轮事件"""
+        # 获取滚轮增量
+        delta = event.delta()
+        if delta == 0:
+            return
+        
+        # 获取当前视图范围
+        view_box = self.game_plot_widget.getViewBox()
+        current_range = view_box.viewRange()
+        
+        # 计算缩放因子
+        zoom_factor = 0.1 if delta > 0 else -0.1
+        
+        # 计算新的视图范围
+        x_range = current_range[0]
+        y_range = current_range[1]
+        
+        # 计算中心点
+        x_center = (x_range[0] + x_range[1]) / 2
+        y_center = (y_range[0] + y_range[1]) / 2
+        
+        # 计算新的范围
+        x_span = x_range[1] - x_range[0]
+        y_span = y_range[1] - y_range[0]
+        
+        new_x_span = x_span * (1 + zoom_factor)
+        new_y_span = y_span * (1 + zoom_factor)
+        
+        # 限制最小和最大范围
+        new_x_span = max(5, min(new_x_span, 100))  # 最小5个单位，最大100个单位
+        new_y_span = max(5, min(new_y_span, 100))
+        
+        # 设置新的视图范围
+        new_x_range = [x_center - new_x_span/2, x_center + new_x_span/2]
+        new_y_range = [y_center - new_y_span/2, y_center + new_y_span/2]
+        
+        # 确保范围在有效区域内
+        new_x_range[0] = max(-10, new_x_range[0])
+        new_x_range[1] = min(73, new_x_range[1])
+        new_y_range[0] = max(-10, new_y_range[0])
+        new_y_range[1] = min(73, new_y_range[1])
+        
+        # 应用新的视图范围
+        view_box.setRange(xRange=new_x_range, yRange=new_y_range)
+        
+        print(f"🎮 游戏区域缩放: 范围=[{new_x_range[0]:.1f}-{new_x_range[1]:.1f}, {new_y_range[0]:.1f}-{new_y_range[1]:.1f}]")
+    
+    def on_pressure_mouse_wheel(self, event):
+        """处理压力视图的鼠标滚轮事件"""
+        # 获取滚轮增量
+        delta = event.delta()
+        if delta == 0:
+            return
+        
+        # 获取当前视图范围
+        view_box = self.pressure_2d_widget.getViewBox()
+        current_range = view_box.viewRange()
+        
+        # 计算缩放因子
+        zoom_factor = 0.1 if delta > 0 else -0.1
+        
+        # 计算新的视图范围
+        x_range = current_range[0]
+        y_range = current_range[1]
+        
+        # 计算中心点
+        x_center = (x_range[0] + x_range[1]) / 2
+        y_center = (y_range[0] + y_range[1]) / 2
+        
+        # 计算新的范围
+        x_span = x_range[1] - x_range[0]
+        y_span = y_range[1] - y_range[0]
+        
+        new_x_span = x_span * (1 + zoom_factor)
+        new_y_span = y_span * (1 + zoom_factor)
+        
+        # 限制最小和最大范围
+        new_x_span = max(10, min(new_x_span, 100))  # 最小10个单位，最大100个单位
+        new_y_span = max(10, min(new_y_span, 100))
+        
+        # 设置新的视图范围
+        new_x_range = [x_center - new_x_span/2, x_center + new_x_span/2]
+        new_y_range = [y_center - new_y_span/2, y_center + new_y_span/2]
+        
+        # 确保范围在有效区域内
+        new_x_range[0] = max(-10, new_x_range[0])
+        new_x_range[1] = min(73, new_x_range[1])
+        new_y_range[0] = max(-10, new_y_range[0])
+        new_y_range[1] = min(73, new_y_range[1])
+        
+        # 应用新的视图范围
+        view_box.setRange(xRange=new_x_range, yRange=new_y_range)
+        
+        print(f"📊 压力视图缩放: 范围=[{new_x_range[0]:.1f}-{new_x_range[1]:.1f}, {new_y_range[0]:.1f}-{new_y_range[1]:.1f}]")
     
     def update_interface_layout(self, system_mode):
-        """根据系统模式更新界面布局 - 2:3比例布局"""
-        # 🔧 使用新的布局设置
-        self.fig.subplots_adjust(
-            left=0.03,      # 减少左边距
-            right=0.97,     # 减少右边距
-            top=0.92,       # 减少上边距
-            bottom=0.08,    # 减少下边距
-            wspace=0.25     # 减少子图间距
-        )
+        """根据系统模式更新界面布局 - PyQtGraph版本"""
+        # PyQtGraph布局相对简单，主要调整大小比例
+        layout = self.layout()
+        if layout:
+            # 调整游戏区域和压力区域的比例
+            layout.setStretch(0, 2)  # 游戏区域
+            layout.setStretch(1, 3)  # 压力区域
         
-        # 更新标题
-        self.ax_game.set_title("推箱子游戏 - 实时传感器", fontsize=14, color='white', fontweight='bold')
-        self.ax_pressure.set_title("压力分布 (2:3比例布局)", fontsize=12, color='white')
-        
-        # 强制重绘
-        self.fig.canvas.draw()
-        print(f"�� 界面布局已更新为2:3比例布局")
+        print(f"🎨 界面布局已更新为PyQtGraph版本")
     
     def update_game_state(self, state_info: Dict):
         """更新游戏状态"""
+        print(f"🎮 收到游戏状态更新: {state_info}")
+        
+        # 🆕 开始游戏状态更新阶段测量
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            self.performance_analyzer.start_stage('game_update')
+        
         # 更新基本状态
         if 'box_position' in state_info:
+            old_position = self.box_position.copy()
             self.box_position = np.array(state_info['box_position'])
+            print(f"📦 箱子位置更新: {old_position} → {self.box_position}")
         if 'box_target_position' in state_info:
+            old_target = self.box_target_position.copy()
             self.box_target_position = np.array(state_info['box_target_position'])
+            print(f"🎯 目标位置更新: {old_target} → {self.box_target_position}")
         if 'current_cop' in state_info:
             self.current_cop = state_info['current_cop']
         if 'initial_cop' in state_info:
@@ -399,13 +901,79 @@ class BoxGameRenderer(FigureCanvas):
         
         # 检查目标达成
         self.check_target_reached()
+        
+        # 🖱️ 确保鼠标交互设置不被覆盖
+        self.ensure_mouse_interaction_enabled()
+        
+        # 🆕 结束游戏状态更新阶段测量
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            self.performance_analyzer.end_stage('game_update')
     
     def update_pressure_data(self, pressure_data: np.ndarray):
-        """更新压力数据"""
+        """更新压力数据并计算COP点"""
+        # 🆕 开始压力数据更新阶段测量
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            self.performance_analyzer.start_stage('pressure_update')
+        
         if pressure_data is not None:
+            print(f"📊 收到压力数据: 形状={pressure_data.shape}, 范围=[{pressure_data.min():.6f}, {pressure_data.max():.6f}]")
             self.pressure_data = pressure_data.copy()
             self.pressure_data_changed = True  # 🚀 设置变化标志
             self._pressure_data_changed = True  # 🎯 设置3D缓存变化标志
+            
+            # 🎯 计算COP点（压力中心）
+            self.calculate_cop_from_pressure_data(pressure_data)
+            
+            print(f"✅ 压力数据已更新，COP点已计算")
+            
+            # 🖱️ 确保鼠标交互设置不被覆盖
+            self.ensure_mouse_interaction_enabled()
+        else:
+            print("⚠️ 收到空的压力数据")
+        
+        # 🆕 结束压力数据更新阶段测量
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            self.performance_analyzer.end_stage('pressure_update')
+    
+    def calculate_cop_from_pressure_data(self, pressure_data: np.ndarray):
+        """从压力数据计算COP点（压力中心）"""
+        try:
+            if pressure_data is None or pressure_data.size == 0:
+                return
+            
+            # 找到压力数据的最大值位置
+            max_pressure = np.max(pressure_data)
+            if max_pressure <= 0:
+                return
+            
+            # 找到最大压力值的坐标
+            max_indices = np.where(pressure_data == max_pressure)
+            if len(max_indices[0]) == 0:
+                return
+            
+            # 取第一个最大值位置作为COP点
+            cop_y = max_indices[0][0]  # 行索引（Y坐标）
+            cop_x = max_indices[1][0]  # 列索引（X坐标）
+            
+            # 更新当前COP点
+            self.current_cop = [cop_x, cop_y]
+            
+            # 如果是第一次计算，设置为初始COP点
+            if self.initial_cop is None:
+                self.initial_cop = [cop_x, cop_y]
+            
+            # 添加到历史轨迹
+            self.cop_history.append([cop_x, cop_y])
+            
+            # 设置游戏状态变化标志
+            self.game_state_changed = True
+            
+            print(f"🎯 COP点已计算: ({cop_x:.1f}, {cop_y:.1f})")
+            
+        except Exception as e:
+            print(f"❌ COP点计算失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     def update_consensus_angle(self, angle: float, confidence: float):
         """更新共识角度"""
@@ -429,26 +997,93 @@ class BoxGameRenderer(FigureCanvas):
         else:
             print("⚠️ 路径规划模块不可用")
     
+    def set_path_guide_mode(self, enabled: bool):
+        """设置路径引导模式状态"""
+        self.is_path_guide_mode = enabled
+        if enabled:
+            print("🗺️ 渲染器：路径引导模式已启用，将优化渲染性能")
+            # 路径引导模式下强制使用2D模式
+            if self.heatmap_view_mode == '3d':
+                print("🎨 路径引导模式：自动切换到2D热力图")
+                self.heatmap_view_mode = '2d'
+        else:
+            print("🗺️ 渲染器：路径引导模式已禁用")
+    
+    def is_in_path_guide_mode(self) -> bool:
+        """检查是否处于路径引导模式"""
+        return self.is_path_guide_mode
+    
     def update_display(self):
-        """更新显示内容 - 优化版"""
+        """更新显示内容 - PyQtGraph优化版"""
+        # 🆕 开始帧测量
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            start_frame_measurement()
+        
         try:
             # 🚀 记录渲染开始时间
             self.render_start_time = time.time()
             
+            # 🔍 每30帧检查一次y轴设置
+            if hasattr(self, '_debug_frame_count') and self._debug_frame_count % 30 == 0:
+                self.check_y_axis_settings()
+            
+            # 🆕 开始显示更新阶段测量
+            if PERFORMANCE_ANALYZER_AVAILABLE:
+                self.performance_analyzer.start_stage('display_update')
+            
+            # 🔍 强制调试输出
+            if hasattr(self, '_debug_frame_count'):
+                self._debug_frame_count += 1
+            else:
+                self._debug_frame_count = 1
+            
+            # 每30帧输出一次调试信息
+            if self._debug_frame_count % 30 == 0:
+                print(f"🔍 渲染帧 {self._debug_frame_count}: 压力数据={self.pressure_data is not None}, "
+                      f"压力变化={self.pressure_data_changed}, 游戏变化={self.game_state_changed}")
+                if self.pressure_data is not None:
+                    print(f"🔍 压力数据形状: {self.pressure_data.shape}, 范围: [{self.pressure_data.min():.6f}, {self.pressure_data.max():.6f}]")
+            
             # 🎯 增量渲染：只在必要时更新
             if self.pressure_data_changed:
+                print(f"🔄 检测到压力数据变化，开始更新压力分布")
                 self.update_pressure_only()
                 self.pressure_data_changed = False
+            else:
+                # 即使没有变化，也检查是否需要初始化渲染
+                if self.pressure_data is not None and self.pressure_image_item is None and self.pressure_surface_item is None:
+                    print(f"🔄 检测到压力数据但未初始化渲染，强制更新")
+                    self.update_pressure_only()
             
+            # 🔧 修复：确保游戏状态变化时游戏区域也会被更新
             if self.game_state_changed:
+                print(f"🔄 检测到游戏状态变化，开始更新游戏区域")
                 self.update_game_area_only()
                 self.game_state_changed = False
+            else:
+                # 🔧 新增：即使没有游戏状态变化，也检查是否需要初始化游戏区域
+                if not hasattr(self, '_box_item') or self._box_item is None:
+                    print(f"🔄 检测到游戏区域未初始化，强制更新")
+                    self.update_game_area_only()
             
-            # 🎨 应用子图属性
-            self.setup_subplot_properties()
+            # 🔧 新增：强制初始化游戏区域（如果还没有初始化）
+            if not hasattr(self, '_game_area_initialized') or not self._game_area_initialized:
+                print(f"🔄 强制初始化游戏区域")
+                self.update_game_area_only()
+                self._game_area_initialized = True
             
-            # 🔄 使用轻量级画布更新
-            self.draw_idle()
+            # 🔧 新增：调试信息
+            if hasattr(self, '_debug_frame_count') and self._debug_frame_count % 60 == 0:
+                print(f"🔍 调试信息: game_state_changed={self.game_state_changed}, "
+                      f"has_box_item={hasattr(self, '_box_item')}, "
+                      f"box_item={getattr(self, '_box_item', None)}, "
+                      f"game_area_initialized={getattr(self, '_game_area_initialized', False)}")
+            
+            # 🔄 PyQtGraph自动更新，无需手动调用draw()
+            
+            # 🆕 结束显示更新阶段测量
+            if PERFORMANCE_ANALYZER_AVAILABLE:
+                self.performance_analyzer.end_stage('display_update')
             
             # 📊 更新帧率统计
             self.update_frame_rate_stats()
@@ -456,41 +1091,76 @@ class BoxGameRenderer(FigureCanvas):
             # 🚀 性能监控
             self.monitor_render_performance()
             
+            # 🆕 结束帧测量
+            if PERFORMANCE_ANALYZER_AVAILABLE:
+                end_frame_measurement()
+            
         except Exception as e:
             print(f"⚠️ 渲染更新时出错: {e}")
             import traceback
             traceback.print_exc()
+            
+            # 🆕 确保在异常情况下也结束帧测量
+            if PERFORMANCE_ANALYZER_AVAILABLE:
+                end_frame_measurement()
     
     def update_pressure_only(self):
-        """只更新压力分布图"""
+        """只更新压力分布图 - PyQtGraph版本"""
+        # 🆕 开始渲染阶段测量
+        if PERFORMANCE_ANALYZER_AVAILABLE:
+            self.performance_analyzer.start_stage('rendering')
+        
         if self.pressure_data is None:
+            print("❌ 压力数据为空，跳过渲染")
+            if PERFORMANCE_ANALYZER_AVAILABLE:
+                self.performance_analyzer.end_stage('rendering')
             return
         
         try:
+            print(f"🎨 开始更新压力分布，模式={self.heatmap_view_mode}")
+            print(f"🎨 压力数据形状: {self.pressure_data.shape}")
+            print(f"🎨 压力数据范围: [{self.pressure_data.min():.6f}, {self.pressure_data.max():.6f}]")
+            
             # 预处理数据
             processed_data = self.preprocess_pressure_data_optimized(self.pressure_data)
             if processed_data is None:
+                print("❌ 数据预处理失败")
+                if PERFORMANCE_ANALYZER_AVAILABLE:
+                    self.performance_analyzer.end_stage('rendering')
                 return
             
             display_data = processed_data['data']
+            print(f"🎨 预处理完成，显示数据形状={display_data.shape}, 范围=[{display_data.min():.6f}, {display_data.max():.6f}]")
             
             # 根据模式选择渲染方式
             if self.heatmap_view_mode == '3d':
+                print("🎨 调用3D热力图渲染")
                 self.render_3d_heatmap_optimized(display_data)
             else:
+                print("🎨 调用2D热力图渲染")
                 self.render_2d_heatmap_optimized(display_data)
+            
+            print("✅ 压力分布更新完成")
             
         except Exception as e:
             print(f"❌ 压力分布更新失败: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # 🆕 结束渲染阶段测量
+            if PERFORMANCE_ANALYZER_AVAILABLE:
+                self.performance_analyzer.end_stage('rendering')
     
     def update_game_area_only(self):
-        """只更新游戏区域"""
+        """只更新游戏区域 - PyQtGraph版本"""
         try:
-            # 🧹 只清空游戏区域
-            self.ax_game.clear()
+            # 🧹 清除游戏区域
+            self.game_plot_widget.clear()
             
-            # 🎮 渲染游戏区域
-            self.render_game_area()
+            # 🗺️ 渲染路径可视化
+            if PATH_PLANNING_AVAILABLE:
+                print(f"🎨 路径引导模式状态: {self.is_path_guide_mode}")
+                self.path_manager.render_complete_path_visualization(self.box_position)
             
             # 📦 渲染箱子
             self.render_box()
@@ -526,9 +1196,8 @@ class BoxGameRenderer(FigureCanvas):
                 self.adaptive_performance_adjustment()
     
     def adaptive_performance_adjustment(self):
-        """自适应性能调整 - 简化版本"""
-        # 简化性能调整逻辑，默认使用高性能模式
-        # 不再进行自动性能调整以保持稳定性
+        """自适应性能调整 - 简化版"""
+        # 简化为空函数，不再进行复杂的性能调整
         pass
     
     def set_performance_mode(self, mode):
@@ -547,50 +1216,138 @@ class BoxGameRenderer(FigureCanvas):
                 print(f"💡 提示：颜色和网格效果可能会发生变化")
                 print(f"💡 建议：如需稳定效果，请在控制面板中手动选择性能模式")
             
-            print(f"🎯 渲染器性能模式已设置为: {mode}")
+            print(f"�� 渲染器性能模式已设置为: {mode}")
             self.update_frame_rate()
         else:
             print(f"❌ 无效的性能模式: {mode}")
     
+    def filter_noise_3d(self, pressure_data, noise_threshold=0.0005, gaussian_sigma=0.8):
+        """
+        抑制3D热力图中的噪声
+        
+        Args:
+            pressure_data: 原始压力数据
+            noise_threshold: 噪声阈值，低于此值的数据将被抑制
+            gaussian_sigma: 高斯模糊的sigma值，用于平滑数据
+            
+        Returns:
+            过滤后的数据
+        """
+        try:
+            if pressure_data is None:
+                return None
+                
+            # 确保数据是numpy数组
+            if not isinstance(pressure_data, np.ndarray):
+                pressure_data = np.array(pressure_data)
+            
+            # 1. 应用高斯模糊平滑数据
+            filtered_data = self.gaussian_blur(pressure_data, sigma=gaussian_sigma)
+            
+            # 2. 计算噪声基线（使用数据的最小值或百分位数）
+            noise_baseline = np.percentile(filtered_data, 10)  # 使用10%分位数作为噪声基线
+            
+            # 3. 设置动态噪声阈值
+            dynamic_threshold = max(noise_threshold, noise_baseline * 1.5)
+            
+            # 4. 抑制低于阈值的数据
+            # 使用软阈值方法：低于阈值的数据逐渐衰减，而不是直接置零
+            mask = filtered_data > dynamic_threshold
+            filtered_data = np.where(
+                mask,
+                filtered_data - dynamic_threshold,  # 减去噪声基线
+                filtered_data * 0.1  # 保留10%的低值，避免完全消失
+            )
+            
+            # 5. 确保数据非负
+            filtered_data = np.maximum(filtered_data, 0.0)
+            
+            # 6. 可选：应用额外的平滑处理
+            if gaussian_sigma > 0:
+                filtered_data = self.gaussian_blur(filtered_data, sigma=gaussian_sigma * 0.5)
+            
+            print(f"🔇 噪声过滤 - 原始范围: [{pressure_data.min():.6f}, {pressure_data.max():.6f}]")
+            print(f"🔇 噪声过滤 - 过滤后范围: [{filtered_data.min():.6f}, {filtered_data.max():.6f}]")
+            print(f"🔇 噪声过滤 - 使用阈值: {dynamic_threshold:.6f}")
+            
+            return filtered_data
+            
+        except Exception as e:
+            print(f"❌ 噪声过滤失败: {e}")
+            return pressure_data  # 失败时返回原始数据
+    
+    def set_noise_filter_options(self, noise_threshold=0.0005, gaussian_sigma=0.8):
+        """设置噪声过滤参数"""
+        self.noise_filter_threshold = noise_threshold
+        self.noise_filter_sigma = gaussian_sigma
+        print(f"🔇 噪声过滤参数已设置 - 阈值: {noise_threshold:.6f}, 高斯模糊: {gaussian_sigma}")
+    
+    def set_2d_smoothing_options(self, gaussian_sigma=1.0):
+        """设置2D热力图平滑参数"""
+        self.gaussian_sigma = gaussian_sigma
+        print(f"🎨 2D热力图平滑参数已设置 - 高斯模糊sigma: {gaussian_sigma}")
+        
+        # 🔄 如果有当前压力数据，强制重新渲染2D热力图
+        if self.pressure_data is not None and self.heatmap_view_mode == '2d':
+            print("🔄 强制重新渲染2D热力图以应用新的平滑参数")
+            self.pressure_data_changed = True
+            self.update_pressure_only()
+    
+    def set_trajectory_smoothing_options(self, window_size=5, sigma=1.0):
+        """设置轨迹平滑参数"""
+        self.trajectory_window_size = window_size
+        self.trajectory_sigma = sigma
+        print(f"🎨 轨迹平滑参数已设置 - 窗口大小: {window_size}, 高斯平滑sigma: {sigma}")
+        
+        # 🔄 强制重新渲染游戏区域以应用新的平滑参数
+        if hasattr(self, 'cop_history') and len(self.cop_history) > 0:
+            print("🔄 强制重新渲染游戏区域以应用新的轨迹平滑参数")
+            self.game_state_changed = True
+            self.update_game_area_only()
+    
+    def set_3d_display_options(self, grid_scale=50.0, camera_distance=8, camera_elevation=25, camera_azimuth=45, enhancement_factor=3000):
+        """
+        设置3D显示参数
+        
+        Args:
+            grid_scale: 网格缩放比例 - 进一步增大到50.0让3D区域更大
+            camera_distance: 相机距离 - 进一步减小到8让视角更近
+            camera_elevation: 相机仰角
+            camera_azimuth: 相机方位角
+            enhancement_factor: 3D增强因子
+        """
+        self.grid_scale = grid_scale
+        self.camera_distance = camera_distance
+        self.camera_elevation = camera_elevation
+        self.camera_azimuth = camera_azimuth
+        self.enhancement_factor = enhancement_factor
+        print(f"🎨 3D显示参数已设置:")
+        print(f"   - 网格缩放: {grid_scale}")
+        print(f"   - 相机距离: {camera_distance}")
+        print(f"   - 相机仰角: {camera_elevation}")
+        print(f"   - 相机方位角: {camera_azimuth}")
+        print(f"   - 增强因子: {enhancement_factor}")
+        
+        # 🔄 强制重新创建3D表面以应用新参数
+        if self.pressure_surface_item is not None:
+            print("🔄 强制重新创建3D表面以应用新参数...")
+            self.pressure_surface_item = None
+            # 清除3D视图
+            if self.pressure_3d_widget:
+                self.pressure_3d_widget.clear()
+            # 立即重置相机位置
+            self.reset_3d_camera_position()
+    
     def preprocess_pressure_data_optimized(self, pressure_data):
-        """优化的数据预处理 - 带缓存"""
+        """简化的数据预处理 - 直接返回原始数据"""
         if pressure_data is None:
             return None
         
         try:
-            # 生成数据哈希值
-            data_hash = hash(pressure_data.tobytes())
-            
-            # 检查缓存
-            if (self._preprocessed_cache and 
-                self._preprocessed_cache.get('hash') == data_hash):
-                return self._preprocessed_cache['result']
-            
-            # 根据性能模式调整预处理
-            if self.performance_mode == "低性能":
-                # 最小预处理
-                result = {
-                    'data': pressure_data,
-                    'colormap': 'hot'
-                }
-            elif self.performance_mode == "标准":
-                # 基本预处理
-                if self.use_gaussian_blur:
-                    data = self.gaussian_blur(pressure_data, sigma=0.5)  # 降低模糊强度
-                else:
-                    data = pressure_data
-                result = {
-                    'data': data,
-                    'colormap': self.get_custom_colormap()
-                }
-            else:
-                # 完整预处理
-                result = self.preprocess_pressure_data(pressure_data)
-            
-            # 缓存结果
-            self._preprocessed_cache = {
-                'hash': data_hash,
-                'result': result
+            # 直接返回原始数据，不进行任何预处理
+            result = {
+                'data': pressure_data,
+                'colormap': 'plasma'
             }
             
             return result
@@ -600,133 +1357,177 @@ class BoxGameRenderer(FigureCanvas):
             return None
     
     def clear_all_plots(self):
-        """清空所有子图"""
+        """清空所有子图 - PyQtGraph版本"""
         try:
-            # 简化布局，只清空游戏区域和压力分布
-            self.ax_game.clear()
+            # 清空游戏区域
+            self.game_plot_widget.clear()
             
-            # 压力子图特殊处理
-            if self.pressure_image is not None:
-                # 保留压力图像，只清除其他绘制元素
-                for artist in list(self.ax_pressure.get_children()):
-                    try:
-                        if artist != self.pressure_image and hasattr(artist, 'remove'):
-                            artist.remove()
-                    except Exception as e:
-                        # 忽略无法删除的艺术家对象
-                        pass
+            # 清空压力区域
+            if self.heatmap_view_mode == '3d':
+                self.pressure_3d_widget.clear()
             else:
-                self.ax_pressure.clear()
-            
-            # 重新设置基本属性
-            self.setup_subplot_properties()
+                self.pressure_2d_widget.clear()
             
         except Exception as e:
             print(f"⚠️ 清除图形时出错: {e}")
-            # 如果清除失败，尝试重新创建子图
-            try:
-                self.setup_subplots()
-                print("✅ 子图已重新创建")
-            except Exception as e2:
-                print(f"❌ 重新创建子图失败: {e2}")
     
     def setup_subplot_properties(self):
         """重新设置子图属性"""
         # 游戏区域
-        self.ax_game.set_title("推箱子游戏 - 实时传感器", fontsize=14, color='white', fontweight='bold')
-        self.ax_game.set_xlim(0, 63)
-        self.ax_game.set_ylim(63, 0)  # 🔄 Y轴反转：传感器坐标系Y轴向下
-        self.ax_game.set_aspect('equal')
-        self.ax_game.grid(True, alpha=0.3, color='gray')
-        self.ax_game.set_facecolor('black')
+        self.game_plot_widget.setTitle("推箱子游戏 - 实时传感器", color='white', size='14pt')
+        self.game_plot_widget.getAxis('bottom').setLabel('X', color='white')
+        self.game_plot_widget.getAxis('left').setLabel('Y', color='white')
+        self.game_plot_widget.getAxis('bottom').setTicks([[(i, str(i)) for i in range(64)]])
+        self.game_plot_widget.getAxis('left').setTicks([[(i, str(i)) for i in range(64)]])
+        
+        # 压力分布图 - GLViewWidget没有getViewBox方法
+        self.pressure_3d_widget.setTitle("压力分布 (3D)", color='white', size='12pt')
+        # self.pressure_3d_widget.getViewBox().setCameraPosition(distance=200)  # GLViewWidget没有getViewBox方法
+        # self.pressure_3d_widget.getViewBox().setBackgroundColor('black')  # GLViewWidget没有getViewBox方法
+        # self.pressure_3d_widget.getViewBox().addItem(GLGridItem(size=np.array([64, 64])))  # GLViewWidget没有getViewBox方法
         
         # 压力分布图
-        self.ax_pressure.set_title("压力分布", fontsize=12, color='white')
-        self.ax_pressure.set_facecolor('black')
+        self.pressure_2d_widget.setTitle("压力分布 (2D 2:3比例布局)", color='white', size='12pt')
+        self.pressure_2d_widget.getAxis('bottom').setLabel('X', color='white')
+        self.pressure_2d_widget.getAxis('left').setLabel('Y', color='white')
+        self.pressure_2d_widget.getAxis('bottom').setTicks([[(i, str(i)) for i in range(64)]])
+        self.pressure_2d_widget.getAxis('left').setTicks([[(i, str(i)) for i in range(64)]])
         
         # 统一样式
-        for ax in [self.ax_game, self.ax_pressure]:
-            ax.tick_params(colors='white', labelsize=8)
-            for spine in ax.spines.values():
-                spine.set_color('white')
+        # self.pressure_3d_widget.getViewBox().setXRange(0, 63, padding=0)  # GLViewWidget没有getViewBox方法
+        # self.pressure_3d_widget.getViewBox().setYRange(0, 63, padding=0)  # GLViewWidget没有getViewBox方法
+        self.pressure_2d_widget.getAxis('bottom').setRange(0, 63)
+        self.pressure_2d_widget.getAxis('left').setRange(0, 63)  # Y轴正常：0在顶部，63在底部
+        
+        # 设置PyQtGraph样式
+        self.setup_pyqtgraph_style()
     
     def render_game_area(self):
-        """渲染游戏区域"""
+        """渲染游戏区域 - PyQtGraph版本"""
         # 🗺️ 渲染路径可视化
         if PATH_PLANNING_AVAILABLE:
+            print(f"🎨 路径引导模式状态: {self.is_path_guide_mode}")
             self.path_manager.render_complete_path_visualization(self.box_position)
+        
+        # 📦 确保箱子在路径可视化之后渲染
+        self.render_box()
     
     def render_box(self):
-        """渲染箱子"""
-        # 🎨 确定箱子颜色
-        if self.is_sliding:
-            box_color = 'lime'
-            edge_color = 'green'
-            alpha = 0.8
-        elif self.is_tangential:
-            box_color = 'orange'
-            edge_color = 'darkorange'
-            alpha = 0.7
-        elif self.is_contact:
-            box_color = 'yellow'
-            edge_color = 'gold'
-            alpha = 0.6
-        else:
-            box_color = 'lightblue'
-            edge_color = 'blue'
-            alpha = 0.5
-        
-        # 📦 绘制箱子
-        box_size = 6.0
-        box_rect = FancyBboxPatch(
-            (self.box_position[0] - box_size/2, self.box_position[1] - box_size/2),
-            box_size, box_size,
-            boxstyle="round,pad=0.5",
-            linewidth=3,
-            edgecolor=edge_color,
-            facecolor=box_color,
-            alpha=alpha
-        )
-        self.ax_game.add_patch(box_rect)
-        
-        # 📦 箱子中心标记
-        self.ax_game.plot(self.box_position[0], self.box_position[1], 
-                         'k+', markersize=8, markeredgewidth=2)
-        
-        # 🎯 目标位置标记（如果不同于当前位置）
-        if np.linalg.norm(self.box_target_position - self.box_position) > 1:
-            target_rect = Rectangle(
-                (self.box_target_position[0] - box_size/2, self.box_target_position[1] - box_size/2),
-                box_size, box_size,
-                linewidth=2,
-                edgecolor='red',
-                facecolor='none',
-                linestyle='--',
-                alpha=0.6
-            )
-            self.ax_game.add_patch(target_rect)
+        """渲染箱子 - PyQtGraph版本"""
+        try:
+            # 清除之前的箱子
+            if hasattr(self, '_box_item'):
+                try:
+                    self.game_plot_widget.removeItem(self._box_item)
+                except:
+                    pass
             
-            # 🏹 绘制移动方向箭头
-            self.render_movement_direction_arrow()
-        
-        # 🎮 检查目标达成
-        self.check_target_reached()
+            if hasattr(self, '_box_center_item'):
+                try:
+                    self.game_plot_widget.removeItem(self._box_center_item)
+                except:
+                    pass
+            
+            if hasattr(self, '_box_target_item'):
+                try:
+                    self.game_plot_widget.removeItem(self._box_target_item)
+                except:
+                    pass
+            
+            # 🎨 确定箱子颜色
+            if self.is_sliding:
+                box_color = (0, 255, 0)  # lime RGB
+                edge_color = (0, 128, 0)  # green RGB
+                alpha = 0.8
+            elif self.is_tangential:
+                box_color = (255, 165, 0)  # orange RGB
+                edge_color = (255, 140, 0)  # darkorange RGB
+                alpha = 0.7
+            elif self.is_contact:
+                box_color = (255, 255, 0)  # yellow RGB
+                edge_color = (255, 215, 0)  # gold RGB
+                alpha = 0.6
+            else:
+                box_color = (173, 216, 230)  # lightblue RGB
+                edge_color = (0, 0, 255)     # blue RGB
+                alpha = 0.5
+            
+            # 📦 绘制箱子 - 使用PyQtGraph的ScatterPlotItem
+            box_size = 64.0  # 增大箱子尺寸4倍，从16.0改为64.0
+            self._box_item = pg.ScatterPlotItem(
+                x=[self.box_position[0]], 
+                y=[self.box_position[1]],
+                symbol='s',  # 正方形
+                size=box_size,
+                brush=box_color,
+                pen=pg.mkPen(color=edge_color, width=2)
+            )
+            
+            # 添加到游戏区域
+            self.game_plot_widget.addItem(self._box_item)
+            
+            # 📦 箱子中心标记
+            self._box_center_item = pg.ScatterPlotItem(
+                x=[self.box_position[0]], 
+                y=[self.box_position[1]],
+                symbol='+',
+                size=6,
+                pen=pg.mkPen('k', width=2),
+                brush=None
+            )
+            self.game_plot_widget.addItem(self._box_center_item)
+            
+            # 🎯 目标位置标记（如果不同于当前位置）
+            if np.linalg.norm(self.box_target_position - self.box_position) > 1:
+                self._box_target_item = pg.ScatterPlotItem(
+                    x=[self.box_target_position[0]], 
+                    y=[self.box_target_position[1]],
+                    symbol='s',
+                    size=box_size,
+                    brush=None,
+                    pen=pg.mkPen(color=(255, 0, 0), width=2, style=pg.QtCore.Qt.DashLine)  # red RGB
+                )
+                self.game_plot_widget.addItem(self._box_target_item)
+                
+                # 🏹 绘制移动方向箭头
+                self.render_movement_direction_arrow()
+            
+            print(f"📦 箱子已渲染在位置: ({self.box_position[0]:.1f}, {self.box_position[1]:.1f})")
+            print(f"📦 目标位置: ({self.box_target_position[0]:.1f}, {self.box_target_position[1]:.1f})")
+            print(f"📦 游戏状态变化: {getattr(self, 'game_state_changed', False)}")
+            
+        except Exception as e:
+            print(f"❌ 箱子渲染失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     def render_cop_and_trajectory(self):
-        """渲染压力中心和轨迹"""
+        """渲染压力中心和轨迹 - PyQtGraph版本，添加轨迹平滑"""
         # 🎯 绘制当前压力中心
         if self.current_cop is not None and self.current_cop[0] is not None and self.current_cop[1] is not None:
-            self.ax_game.plot(self.current_cop[0], self.current_cop[1], 
-                             'ro', markersize=8, markeredgewidth=2, 
-                             markeredgecolor='darkred', alpha=0.8)
+            cop_item = pg.ScatterPlotItem(
+                x=[self.current_cop[0]], 
+                y=[self.current_cop[1]],
+                symbol='o',
+                size=8,
+                pen=pg.mkPen('darkred', width=2),
+                brush=pg.mkBrush('red')
+            )
+            self.game_plot_widget.addItem(cop_item)
         
         # 🎯 绘制初始压力中心
         if self.initial_cop is not None and self.initial_cop[0] is not None and self.initial_cop[1] is not None:
-            self.ax_game.plot(self.initial_cop[0], self.initial_cop[1], 
-                             'go', markersize=6, markeredgewidth=1, 
-                             markeredgecolor='darkgreen', alpha=0.6)
+            initial_cop_item = pg.ScatterPlotItem(
+                x=[self.initial_cop[0]], 
+                y=[self.initial_cop[1]],
+                symbol='o',
+                size=6,
+                pen=pg.mkPen('darkgreen', width=1),
+                brush=pg.mkBrush('green')
+            )
+            self.game_plot_widget.addItem(initial_cop_item)
         
-        # 📈 绘制轨迹
+        # 📈 绘制轨迹 - 添加平滑处理
         if self.show_trajectory and len(self.cop_history) > 1:
             # 过滤掉包含None的轨迹点
             valid_trajectory = []
@@ -736,11 +1537,67 @@ class BoxGameRenderer(FigureCanvas):
             
             if len(valid_trajectory) > 1:
                 trajectory = np.array(valid_trajectory)
-                self.ax_game.plot(trajectory[:, 0], trajectory[:, 1], 
-                                 'b-', linewidth=2, alpha=0.6)
+                
+                # 🎨 添加轨迹平滑处理
+                smoothed_trajectory = self.smooth_trajectory(trajectory)
+                
+                trajectory_item = pg.PlotDataItem(
+                    x=smoothed_trajectory[:, 0],
+                    y=smoothed_trajectory[:, 1],
+                    pen=pg.mkPen('blue', width=2, alpha=0.6)
+                )
+                self.game_plot_widget.addItem(trajectory_item)
+    
+    def smooth_trajectory(self, trajectory, window_size=None, sigma=None):
+        """
+        平滑轨迹数据
+        
+        Args:
+            trajectory: 原始轨迹数据 (N, 2)
+            window_size: 滑动窗口大小，用于移动平均（如果为None，使用默认值）
+            sigma: 高斯平滑的sigma值（如果为None，使用默认值）
+            
+        Returns:
+            平滑后的轨迹数据
+        """
+        try:
+            # 使用可配置的参数，如果没有设置则使用默认值
+            if window_size is None:
+                window_size = getattr(self, 'trajectory_window_size', 5)
+            if sigma is None:
+                sigma = getattr(self, 'trajectory_sigma', 1.0)
+            
+            if len(trajectory) < window_size:
+                return trajectory
+            
+            # 1. 移动平均平滑
+            smoothed_x = np.convolve(trajectory[:, 0], np.ones(window_size)/window_size, mode='valid')
+            smoothed_y = np.convolve(trajectory[:, 1], np.ones(window_size)/window_size, mode='valid')
+            
+            # 2. 高斯平滑（可选，进一步减少噪声）
+            if sigma > 0:
+                from scipy.ndimage import gaussian_filter1d
+                smoothed_x = gaussian_filter1d(smoothed_x, sigma=sigma)
+                smoothed_y = gaussian_filter1d(smoothed_y, sigma=sigma)
+            
+            # 3. 重建轨迹数组
+            smoothed_trajectory = np.column_stack([smoothed_x, smoothed_y])
+            
+            # 4. 确保平滑后的轨迹长度与原始轨迹匹配
+            if len(smoothed_trajectory) < len(trajectory):
+                # 如果平滑后长度不足，用原始数据补充
+                padding_length = len(trajectory) - len(smoothed_trajectory)
+                padding = trajectory[-padding_length:]
+                smoothed_trajectory = np.vstack([smoothed_trajectory, padding])
+            
+            return smoothed_trajectory
+            
+        except Exception as e:
+            print(f"⚠️ 轨迹平滑处理失败: {e}")
+            return trajectory
     
     def render_movement_direction_arrow(self):
-        """绘制从箱子到目标位置的移动方向箭头和角度"""
+        """绘制从箱子到目标位置的移动方向箭头和角度 - PyQtGraph版本"""
         if np.linalg.norm(self.box_target_position - self.box_position) > 1:
             # 计算方向向量
             direction = self.box_target_position - self.box_position
@@ -755,156 +1612,48 @@ class BoxGameRenderer(FigureCanvas):
             arrow_end_x = self.box_position[0] + arrow_length * np.cos(angle_rad)
             arrow_end_y = self.box_position[1] + arrow_length * np.sin(angle_rad)
             
-            # 使用annotate绘制箭头
-            self.ax_game.annotate('', 
-                                 xy=(arrow_end_x, arrow_end_y), 
-                                 xytext=(self.box_position[0], self.box_position[1]),
-                                 arrowprops=dict(arrowstyle='->', lw=3, 
-                                               color='yellow', alpha=0.8,
-                                               mutation_scale=6))
+            # 使用PyQtGraph的箭头
+            arrow_item = pg.ArrowItem(
+                pos=(arrow_end_x, arrow_end_y),
+                angle=angle_deg,
+                tipAngle=30,
+                baseAngle=0,
+                headLen=10,
+                tailLen=0,
+                pen=pg.mkPen('yellow', width=3),
+                brush=pg.mkBrush('yellow')
+            )
+            self.game_plot_widget.addItem(arrow_item)
             
             # 显示距离和角度信息
-            info_text = f"距离: {distance:.1f}\n角度: {angle_deg:.1f}°"
-            self.ax_game.text(arrow_end_x + 2, arrow_end_y + 2, info_text,
-                             fontsize=8, color='yellow', 
-                             bbox=dict(boxstyle="round,pad=0.3", 
-                                      facecolor='black', alpha=0.7))
-    
-    def check_target_reached(self):
-        """检查目标是否达成并触发烟花效果"""
-        # 🎯 优化：只在有路径数据时才进行详细检查
-        if (hasattr(self, 'path_manager') and self.path_manager and 
-            hasattr(self.path_manager, 'path_progress') and 
-            self.path_manager.path_progress):
-            
-            progress = self.path_manager.path_progress
-            
-            # 检查是否在路径模式下且已完成所有路径点
-            is_path_mode = self.path_manager.has_navigation
-            is_completed = progress.get('is_completed', False)
-            
-            # 🎯 优化：使用智能调试输出
-            self.debug_print(f"🔍 路径状态: 模式={is_path_mode}, 完成={is_completed}", level=2, frequency=30)
-            
-            if is_path_mode and is_completed:
-                # 检查箱子是否到达最终目标位置
-                distance_to_target = np.linalg.norm(self.box_position - self.box_target_position)
-                
-                if distance_to_target < 0.5:
-                    # 只在首次达成时触发烟花
-                    if not self.last_target_reached:
-                        self.debug_print("🎆 目标达成！触发烟花效果", level=1)
-                        self.add_firework_effect()
-                        self.last_target_reached = True
-                else:
-                    # 如果箱子离开目标位置，重置触发状态
-                    if self.last_target_reached:
-                        self.debug_print(f"🔍 箱子离开目标位置，重置烟花触发状态", level=2)
-                    self.last_target_reached = False
-            else:
-                # 重置触发状态
-                if self.last_target_reached:
-                    self.debug_print(f"🔍 路径未完成，重置烟花触发状态", level=2)
-                self.last_target_reached = False
-        else:
-            # 没有路径数据，重置触发状态
-            if self.last_target_reached:
-                self.debug_print(f"🔍 无路径数据，重置烟花触发状态", level=2)
-            self.last_target_reached = False
-    
-    def add_firework_effect(self):
-        """在目标位置添加烟花效果"""
-        if len(self.fireworks) >= self.max_fireworks:
-            return
-        
-        # 在目标位置生成15个烟花粒子
-        for _ in range(15):
-            # 随机角度和距离
-            angle = np.random.uniform(0, 2 * np.pi)
-            distance = np.random.uniform(2, 8)
-            
-            # 计算粒子位置
-            x = self.box_target_position[0] + distance * np.cos(angle)
-            y = self.box_target_position[1] + distance * np.sin(angle)
-            
-            # 随机速度
-            vx = np.random.uniform(-2, 2)
-            vy = np.random.uniform(-3, -1)  # 向上飞
-            
-            # 随机颜色
-            colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'white']
-            color = np.random.choice(colors)
-            
-            # 随机大小
-            size = np.random.uniform(3, 8)
-            
-            # 创建烟花粒子
-            firework = {
-                'x': x, 'y': y,
-                'vx': vx, 'vy': vy,
-                'color': color,
-                'size': size,
-                'lifetime': self.firework_lifetime
-            }
-            
-            self.fireworks.append(firework)
-        
-        # 🎯 优化：只在首次触发时输出信息
-        self.debug_print(f"🎆 烟花效果已触发 ({len(self.fireworks)}个粒子)", level=1)
-    
-    def update_fireworks(self):
-        """更新烟花粒子状态"""
-        for firework in self.fireworks[:]:  # 使用切片复制避免修改迭代列表
-            # 更新位置
-            firework['x'] += firework['vx']
-            firework['y'] += firework['vy']
-            
-            # 添加重力效果
-            firework['vy'] -= 0.1
-            
-            # 减少生命值
-            firework['lifetime'] -= 1
-            
-            # 移除死亡的粒子
-            if firework['lifetime'] <= 0:
-                self.fireworks.remove(firework)
+            text_item = pg.TextItem(
+                text=f"距离: {distance:.1f}\n角度: {angle_deg:.1f}°",
+                color='yellow',
+                anchor=(0, 0)
+            )
+            text_item.setPos(arrow_end_x + 2, arrow_end_y + 2)
+            self.game_plot_widget.addItem(text_item)
     
     def render_fireworks(self):
-        """渲染烟花粒子"""
+        """渲染烟花粒子 - PyQtGraph版本"""
         for firework in self.fireworks:
             # 计算透明度（基于生命值）
             alpha = firework['lifetime'] / self.firework_lifetime
             
             # 绘制粒子
-            self.ax_game.plot(firework['x'], firework['y'], 
-                             'o', color=firework['color'], 
-                             markersize=firework['size'],
-                             alpha=alpha,
-                             markeredgecolor='white',
-                             markeredgewidth=1)
-    
-    def render_force_vector(self):
-        """渲染力矢量"""
-        if (self.consensus_angle is not None and 
-            self.current_cop is not None and 
-            self.current_cop[0] is not None and 
-            self.current_cop[1] is not None):
-            # 计算力矢量的终点
-            angle_rad = np.radians(self.consensus_angle)
-            force_length = 10 * self.consensus_confidence  # 根据置信度调整长度
-            
-            end_x = self.current_cop[0] + force_length * np.cos(angle_rad)
-            end_y = self.current_cop[1] + force_length * np.sin(angle_rad)
-            
-            # 绘制力矢量箭头
-            self.ax_game.annotate('', 
-                                 xy=(end_x, end_y), 
-                                 xytext=(self.current_cop[0], self.current_cop[1]),
-                                 arrowprops=dict(arrowstyle='->', lw=2, 
-                                               color='red', alpha=0.8))
+            particle_item = pg.ScatterPlotItem(
+                x=[firework['x']], 
+                y=[firework['y']],
+                symbol='o',
+                size=firework['size'],
+                pen=pg.mkPen('white', width=1),
+                brush=pg.mkBrush(firework['color'])
+            )
+            particle_item.setOpacity(alpha)
+            self.game_plot_widget.addItem(particle_item)
     
     def render_status_text(self):
-        """渲染状态文本 - 显示控制模式和渲染帧率"""
+        """渲染状态文本 - PyQtGraph版本，在右上角显示控制模式"""
         # 🎮 显示控制模式
         control_mode_text = ""
         if hasattr(self, 'current_control_mode'):
@@ -917,25 +1666,21 @@ class BoxGameRenderer(FigureCanvas):
             else:
                 control_mode_text = f"🎮 {self.current_control_mode}"
         
-        # 🎨 显示渲染帧率
-        fps_text = f"渲染帧率: {self.current_fps:.1f} FPS"
-        
-        # 🖼️ 显示控制模式文本
+        # 在游戏区域右上角添加文本 - 修复TextItem参数
         if control_mode_text:
-            self.ax_game.text(2, 62, control_mode_text, 
-                             fontsize=12, color='white', fontweight='bold',
-                             verticalalignment='top',
-                             bbox=dict(boxstyle="round,pad=0.5", 
-                                      facecolor='black', alpha=0.8,
-                                      edgecolor='white', linewidth=1))
-        
-        # 🖼️ 显示帧率文本
-        self.ax_game.text(2, 58, fps_text, 
-                         fontsize=12, color='white', fontweight='bold',
-                         verticalalignment='top',
-                         bbox=dict(boxstyle="round,pad=0.5", 
-                                  facecolor='black', alpha=0.8,
-                                  edgecolor='white', linewidth=1))
+            print(f"🎨 渲染状态文本: {control_mode_text}")
+            # 使用HTML格式来设置字体大小
+            html_text = f'<div style="font-size: 19px; color: white;">{control_mode_text}</div>'
+            control_text_item = pg.TextItem(
+                html=html_text,
+                anchor=(1, 0)  # 右对齐
+            )
+            # 使用更保守的位置
+            control_text_item.setPos(58, 3)  # 右上角位置
+            self.game_plot_widget.addItem(control_text_item)
+            print(f"✅ 状态文本已添加到位置 (58, 5)")
+        else:
+            print(f"⚠️ 没有控制模式文本可显示")
     
     def render_prominent_status_indicator(self):
         """在右上方渲染突出显示的状态指示器 - 已移除，只显示帧率"""
@@ -956,9 +1701,9 @@ class BoxGameRenderer(FigureCanvas):
             
             # 根据模式选择渲染方式
             if self.heatmap_view_mode == '3d':
-                self.render_3d_heatmap(display_data)
+                self.render_3d_heatmap_optimized(display_data)
             else:
-                self.render_2d_heatmap(display_data)
+                self.render_2d_heatmap_optimized(display_data)
             
             # 更新画布
             self.draw()
@@ -1012,20 +1757,44 @@ class BoxGameRenderer(FigureCanvas):
         
         # 渲染详细信息
         detail_text = '\n'.join(detail_lines)
-        self.ax_pressure.text(0.98, 0.02, detail_text, 
-                             color='white', fontsize=8, 
-                             va='bottom', ha='right',
-                             transform=self.ax_pressure.transAxes,
-                             bbox=dict(boxstyle="round,pad=0.3", 
-                                      facecolor='black', alpha=0.8))
+        self.pressure_2d_widget.getPlotItem().addItem(pg.TextItem(text=detail_text, anchor=(1, 0), color='white', font={'size': '8pt'}))
 
-    def on_mouse_press(self, event):
-        """处理鼠标点击事件"""
-        if event.inaxes == self.ax_game:
-            self.mouse_pressed.emit(event.xdata, event.ydata)
+    def reset_view(self):
+        """重置所有视图到默认状态"""
+        try:
+            print("🔄 重置所有视图...")
+            
+            # 重置2D游戏区域视图
+            if self.game_plot_widget:
+                self.game_plot_widget.setXRange(0, 63, padding=0)
+                self.game_plot_widget.setYRange(0, 63, padding=0)
+                # 🔧 强制锁定游戏区域的Y轴范围，防止被其他代码修改
+                self.game_plot_widget.getViewBox().setLimits(yMin=0, yMax=63)
+                self.game_plot_widget.getViewBox().setYRange(0, 63, padding=0)
+                # 🔧 确保Y轴方向正确
+                self.game_plot_widget.invertY(True)
+                print("✅ 游戏区域视图已重置")
+            
+            # 重置2D压力视图
+            if self.pressure_2d_widget:
+                self.pressure_2d_widget.setXRange(0, 63, padding=0)
+                self.pressure_2d_widget.setYRange(0, 63, padding=0)
+                # 🔧 强制锁定2D压力视图的Y轴范围，防止被其他代码修改
+                self.pressure_2d_widget.getViewBox().setLimits(yMin=0, yMax=63)
+                self.pressure_2d_widget.getViewBox().setYRange(0, 63, padding=0)
+                # 🔧 确保Y轴方向正确，与游戏区域一致
+                self.pressure_2d_widget.invertY(True)
+                print("✅ 2D压力视图已重置")
+
+            # 重置3D压力视图相机位置
+            if self.pressure_3d_widget:
+                self.reset_3d_camera_position()
+                
+        except Exception as e:
+            print(f"⚠️ 重置视图失败: {e}")
     
     def reset_visualization(self):
-        """重置可视化"""
+        """重置可视化 - PyQtGraph版本"""
         # 清空历史数据
         self.cop_history.clear()
         self.angle_history.clear()
@@ -1048,12 +1817,16 @@ class BoxGameRenderer(FigureCanvas):
         self.last_target_reached = False
         
         # 重置路径可视化
-        self.path_manager.clear_path_visualization()
+        if self.path_manager:
+            self.path_manager.clear_path_visualization()
         
         # 🎨 重置3D视角到固定45度
         self.reset_3d_view_to_fixed_45()
         
-        print("🔄 可视化已重置")
+        # 清空所有图形
+        self.clear_all_plots()
+        
+        print("�� PyQtGraph可视化已重置")
     
     def set_visualization_options(self, options: Dict):
         """设置可视化选项"""
@@ -1091,17 +1864,47 @@ class BoxGameRenderer(FigureCanvas):
             from interfaces.ordinary.BoxGame.run_box_game_optimized import FrameRateConfig
             interval_ms = FrameRateConfig.get_interval_ms("renderer_fps")
             target_fps = 1000 / interval_ms
+            print(f"🎯 渲染器配置: 间隔={interval_ms}ms, 目标FPS={target_fps:.1f}")
         except ImportError:
             # 回退到默认配置
             target_fps = 30
             interval_ms = int(1000 / target_fps)
+            print(f"⚠️ 使用默认配置: 间隔={interval_ms}ms, 目标FPS={target_fps:.1f}")
         
+        # 🕐 记录启动时间
+        self.render_start_time = time.time()
+        self.frame_count = 0
+        self.last_fps_time = self.render_start_time
+        
+        # 🚀 启动定时器
         self.update_timer.start(interval_ms)
         print(f"🚀 渲染循环已启动 (目标FPS: {target_fps:.1f})")
+        
+        # 🖱️ 启动鼠标交互保护定时器
+        if not hasattr(self, 'mouse_protection_timer'):
+            self.mouse_protection_timer = QTimer()
+            self.mouse_protection_timer.timeout.connect(self.ensure_mouse_interaction_enabled)
+        self.mouse_protection_timer.start(2000)  # 每2秒检查一次
+        print("🖱️ 鼠标交互保护定时器已启动")
+        
+        # 🔍 检查定时器状态
+        print(f"🔍 定时器状态: 活跃={self.update_timer.isActive()}, 间隔={self.update_timer.interval()}ms")
+        
+        # 🔧 强制设置y轴方向
+        self.force_set_y_axis_direction()
+        
+        # 🎨 重置3D相机位置到最佳视角
+        self.reset_3d_camera_position()
     
     def stop_rendering(self):
         """停止渲染循环"""
         self.update_timer.stop()
+        
+        # 🖱️ 停止鼠标交互保护定时器
+        if hasattr(self, 'mouse_protection_timer'):
+            self.mouse_protection_timer.stop()
+            print("🖱️ 鼠标交互保护定时器已停止")
+        
         print("⏹️ 渲染循环已停止")
     
     def update_frame_rate(self):
@@ -1135,7 +1938,7 @@ class BoxGameRenderer(FigureCanvas):
         """获取性能统计"""
         return {
             'current_fps': self.current_fps,
-            'target_fps': 30,
+            'target_fps': 1000 / self.update_timer.interval(),
             'frame_count': self.frame_count
         }
 
@@ -1332,520 +2135,390 @@ class BoxGameRenderer(FigureCanvas):
         print("🎨 预处理参数已重置为默认值")
 
     def toggle_heatmap_mode(self):
-        """切换2D/3D热力图显示模式"""
-        if self.heatmap_view_mode == '2d':
-            self.heatmap_view_mode = '3d'
-            self.heatmap_mode_btn.setText("切换到2D")
-            self.heatmap_mode_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF9800;
-                    color: white;
-                    border: 2px solid #FFFFFF !important;
-                    padding: 5px;
-                    border-radius: 3px;
-                    font-size: 10px;
-                }
-                QPushButton:hover {
-                    background-color: #F57C00;
-                    border: 2px solid #E0E0E0 !important;
-                }
-            """)
-            print("🎨 切换到3D热力图显示")
-        else:
-            self.heatmap_view_mode = '2d'
-            self.heatmap_mode_btn.setText("切换到3D")
-            self.heatmap_mode_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    color: white;
-                    border: 2px solid #FFFFFF !important;
-                    padding: 5px;
-                    border-radius: 3px;
-                    font-size: 10px;
-                }
-                QPushButton:hover {
-                    background-color: #45a049;
-                    border: 2px solid #E0E0E0 !important;
-                }
-            """)
-            print("🎨 切换到2D热力图显示")
-        
-        # 重新渲染压力分布
-        if self.pressure_data is not None:
-            self.render_pressure_distribution()
+        """切换热力图显示模式（2D/3D）"""
+        try:
+            if self.heatmap_view_mode == '3d':
+                self.heatmap_view_mode = '2d'
+                print("🎨 切换到2D热力图模式")
+            else:
+                self.heatmap_view_mode = '3d'
+                print("🎨 切换到3D热力图模式")
+                # 强制重新创建3D表面以应用新的增强效果
+                self.pressure_surface_item = None
+                print("🔄 强制重新创建3D表面以应用增强效果")
+            
+            self.update_pressure_view_visibility()
+            self.pressure_data_changed = True
+            print(f"✅ 热力图模式已切换为: {self.heatmap_view_mode}")
+            
+        except Exception as e:
+            print(f"⚠️ 切换热力图模式失败: {e}")
     
     def render_3d_heatmap_optimized(self, pressure_data):
-        """优化的3D热力图渲染 - 带缓存和性能模式控制"""
+        """优化的3D热力图渲染 - 修复了相机重置问题，增强3D效果"""
         try:
-            # 根据性能模式调整3D效果
-            render_options = self.get_3d_rendering_options_optimized()
-            
-            # 检查是否需要重新创建3D表面
-            if (not hasattr(self, '_3d_surface') or 
-                self._3d_surface is None or 
-                self._pressure_data_changed):
+            if not self.pressure_3d_widget.isVisible():
+                return
+
+            # --- 🔴 关键修改: 逻辑分离 ---
+            # 仅在 surface item 不存在时才创建它并设置相机
+            if self.pressure_surface_item is None:
+                print("🎨 首次创建3D表面...")
+                self.pressure_3d_widget.clear()
                 
-                # 清除当前子图并重新创建3D子图
-                self.ax_pressure.remove()
-                from mpl_toolkits.mplot3d import Axes3D
-                self.ax_pressure = self.fig.add_subplot(1, 5, (3, 5), projection='3d')
-                
-                # 创建网格
-                rows, cols = pressure_data.shape
-                x = np.arange(cols)
-                y = np.arange(rows)
-                X, Y = np.meshgrid(x, y)
-                
-                # 🎨 修正y轴方向，使其与2D热力图保持一致
-                # 在2D中使用origin='upper'，所以y轴从上到下
-                # 在3D中需要翻转y轴数据以保持一致
-                Y_flipped = rows - 1 - Y  # 翻转y轴方向
-                
-                # 根据性能模式调整平滑处理
-                if self.performance_mode == "低性能":
-                    smoothed_data = pressure_data  # 不进行平滑
+                # 预处理压力数据 - 注意：pressure_data可能是字典格式
+                if isinstance(pressure_data, dict):
+                    processed_data = pressure_data['data']
+                    print(f"🎨 使用预处理数据，形状: {processed_data.shape}")
                 else:
-                    smoothed_data = self.apply_3d_smoothing(pressure_data)
+                    processed_data = self.preprocess_pressure_data_optimized(pressure_data)
+                    if processed_data is None:
+                        print("❌ 数据预处理失败")
+                        return
+                    processed_data = processed_data['data']
                 
-                # 创建颜色映射 - 统一策略，避免颜色变化
-                if self.performance_mode == "低性能":
-                    enhanced_colormap = 'hot'  # 低性能模式使用简单颜色映射
-                else:
-                    # 标准、高性能、极限模式都使用自定义颜色映射，保持一致性
-                    enhanced_colormap = self.get_custom_colormap()
-                
-                # 获取颜色范围
-                vmin, vmax = self.y_lim
-                
-                # 绘制3D表面 - 使用修正后的Y坐标
-                self._3d_surface = self.ax_pressure.plot_surface(
-                    X, Y_flipped, smoothed_data, 
-                    cmap=enhanced_colormap,
-                    alpha=render_options['surface_alpha_3d'],
-                    linewidth=0,
-                    antialiased=render_options['enable_anti_aliasing'],
-                    vmin=vmin,
-                    vmax=vmax,
-                    shade=render_options['enable_3d_shadows'],
-                    lightsource=None if not render_options['enable_3d_lighting'] else plt.matplotlib.colors.LightSource(azdeg=315, altdeg=45)
-                )
-                
-                # 根据性能模式添加线框效果 - 使用修正后的Y坐标
-                if render_options['enable_wireframe']:
-                    wire = self.ax_pressure.plot_wireframe(
-                        X, Y_flipped, smoothed_data,
-                        alpha=0.3,
-                        color='white',
-                        linewidth=0.5
+                # 🔇 应用噪声过滤
+                if hasattr(self, 'noise_filter_threshold') and hasattr(self, 'noise_filter_sigma'):
+                    processed_data = self.filter_noise_3d(
+                        processed_data, 
+                        noise_threshold=self.noise_filter_threshold,
+                        gaussian_sigma=self.noise_filter_sigma
                     )
+                else:
+                    # 使用默认参数进行噪声过滤
+                    processed_data = self.filter_noise_3d(processed_data)
                 
-                # 设置标签和标题
-                self.ax_pressure.set_title("压力分布 (3D)", fontsize=12, fontweight='bold', color='white')
-                self.ax_pressure.set_xlabel("", color='white')
-                self.ax_pressure.set_ylabel("", color='white')
-                self.ax_pressure.set_zlabel("", color='white')
-                self.ax_pressure.set_zlim(vmin, vmax)
+                # 🎨 增强3D效果：对数据进行缩放
+                # 使用动态的最大压力值，基于实际数据范围
+                actual_max = np.max(processed_data)
+                max_pressure = max(actual_max, 0.001)  # 至少0.001，避免除零
+                enhanced_data = np.clip(processed_data, 0.0, max_pressure)
                 
-                # 设置固定视角
-                self.ax_pressure.view_init(elev=self.elevation_3d, azim=self.azimuth_3d)
+                # 🎨 使用更强的非线性映射增强效果：创建明显的山峰
+                # 使用指数映射让高值更突出，放大3000倍（从2000增加到3000）
+                enhancement_factor = getattr(self, 'enhancement_factor', 3000)
+                enhanced_data = np.power(enhanced_data / max_pressure, 0.15) * max_pressure * enhancement_factor
                 
-                # 添加颜色条
-                if hasattr(self, 'pressure_colorbar') and self.pressure_colorbar is not None:
-                    try:
-                        self.pressure_colorbar.remove()
-                    except:
-                        pass
+                print(f"🎨 原始数据范围: [{processed_data.min():.6f}, {processed_data.max():.6f}]")
+                print(f"🎨 使用最大压力: {max_pressure:.6f}")
+                print(f"🎨 增强后数据范围: [{enhanced_data.min():.6f}, {enhanced_data.max():.6f}]")
                 
-                self.pressure_colorbar = self.fig.colorbar(
-                    self._3d_surface, 
-                    ax=self.ax_pressure, 
-                    shrink=0.9,
-                    aspect=25,
-                    pad=0.15
+                # 创建颜色映射 - 使用更鲜艳的颜色映射
+                color_map = pg.colormap.get('plasma')  # 使用plasma颜色映射
+                colors = color_map.map(np.clip(processed_data, 0.0, max_pressure) / max_pressure, mode='float')
+                
+                # 创建3D表面
+                self.pressure_surface_item = gl.GLSurfacePlotItem(
+                    z=enhanced_data,  # 使用增强后的数据
+                    colors=colors.reshape(processed_data.shape + (4,)),
+                    shader='shaded',
+                    smooth=True
                 )
-                self.pressure_colorbar.set_label('压力值', rotation=270, labelpad=20, color='white', fontsize=10)
-                self.pressure_colorbar.ax.tick_params(colors='white', labelsize=9)
+                self.pressure_3d_widget.addItem(self.pressure_surface_item)
                 
-                # 设置3D样式
-                self.setup_3d_style_clean()
-                
-                self._pressure_data_changed = False
+                # 🎨 调整网格大小和位置 - 进一步增大3D显示区域
+                grid = gl.GLGridItem()
+                # 使用可配置的网格缩放 - 进一步增大到50.0让3D区域更大
+                grid_scale = getattr(self, 'grid_scale', 50.0)
+                grid.scale(grid_scale, grid_scale, 5)  # 进一步增大Z轴缩放到5
+                # 调整网格位置，让3D区域更居中且更大
+                grid.translate(31.5, 31.5, -2)  # 进一步向下移动网格
+                self.pressure_3d_widget.addItem(grid)
+
+                # 只在第一次创建时重置相机！
+                self.reset_3d_camera_position()
+                print("✅ 3D表面已创建，相机已设置。")
+
+            # 在所有后续帧中，只更新数据，不碰相机
             else:
-                # 只更新数据，不重新创建对象
-                try:
-                    self._3d_surface.set_array(pressure_data.ravel())
-                except:
-                    # 如果更新失败，标记需要重新创建
-                    self._pressure_data_changed = True
-            
+                # print("🎨 正在更新3D表面数据...") # 注释掉以避免刷屏
+                
+                # 处理数据格式
+                if isinstance(pressure_data, dict):
+                    processed_data = pressure_data['data']
+                else:
+                    processed_data = pressure_data
+                
+                # 🔇 应用噪声过滤
+                if hasattr(self, 'noise_filter_threshold') and hasattr(self, 'noise_filter_sigma'):
+                    processed_data = self.filter_noise_3d(
+                        processed_data, 
+                        noise_threshold=self.noise_filter_threshold,
+                        gaussian_sigma=self.noise_filter_sigma
+                    )
+                else:
+                    # 使用默认参数进行噪声过滤
+                    processed_data = self.filter_noise_3d(processed_data)
+                
+                # 🎨 增强3D效果：对数据进行缩放 - 使用与初始创建完全相同的算法
+                # 使用动态的最大压力值，基于实际数据范围
+                actual_max = np.max(processed_data)
+                max_pressure = max(actual_max, 0.001)  # 至少0.001，避免除零
+                enhanced_data = np.clip(processed_data, 0.0, max_pressure)
+                
+                # 🎨 使用更强的非线性映射增强效果：创建明显的山峰
+                # 使用指数映射让高值更突出，使用可配置的增强因子
+                enhancement_factor = getattr(self, 'enhancement_factor', 3000)
+                enhanced_data = np.power(enhanced_data / max_pressure, 0.15) * max_pressure * enhancement_factor
+                
+                color_map = pg.colormap.get('plasma')
+                colors = color_map.map(np.clip(processed_data, 0.0, 0.005) / 0.005, mode='float')
+                
+                self.pressure_surface_item.setData(
+                    z=enhanced_data,  # 使用增强后的数据
+                    colors=colors.reshape(processed_data.shape + (4,))
+                )
+                
+                print(f"🎨 后续帧 - 原始数据范围: [{processed_data.min():.6f}, {processed_data.max():.6f}]")
+                print(f"🎨 后续帧 - 使用最大压力: {max_pressure:.6f}")
+                print(f"🎨 后续帧 - 增强后数据范围: [{enhanced_data.min():.6f}, {enhanced_data.max():.6f}]")
+                
         except Exception as e:
             print(f"❌ 3D热力图渲染失败: {e}")
-            # 回退到2D模式
-            self.heatmap_view_mode = '2d'
-            self.render_2d_heatmap_optimized(pressure_data)
+            import traceback
+            traceback.print_exc()
+            self.pressure_surface_item = None # 渲染失败时重置，以便下次重建
+    
+    def reset_3d_camera_position(self):
+        """重置3D相机位置到最佳视角 - 优化3D效果"""
+        try:
+            if self.pressure_3d_widget:
+                # 🎨 调整相机位置，让3D显示区域更大更明显
+                camera_distance = getattr(self, 'camera_distance', 8)  # 进一步减小默认距离
+                camera_elevation = getattr(self, 'camera_elevation', 25)
+                camera_azimuth = getattr(self, 'camera_azimuth', 45)
+                
+                self.pressure_3d_widget.setCameraPosition(
+                    distance=camera_distance,  # 减小距离，让3D效果更明显
+                    elevation=camera_elevation,  # 增加仰角，让高度差异更明显
+                    azimuth=camera_azimuth    # 调整方位角，获得更好的视角
+                )
+                print(f"🎨 3D相机位置已重置 - 距离:{camera_distance}, 仰角:{camera_elevation}, 方位角:{camera_azimuth}")
+        except Exception as e:
+            print(f"⚠️ 重置3D相机位置失败: {e}")
     
     def render_2d_heatmap_optimized(self, pressure_data):
-        """优化的2D热力图渲染"""
+        """优化的2D热力图渲染 - PyQtGraph版本，添加平滑处理，去掉坐标轴"""
         try:
-            # 根据性能模式调整渲染质量
-            if self.performance_mode == "低性能":
-                # 简化2D渲染
-                self.ax_pressure.clear()
-                im = self.ax_pressure.imshow(
-                    pressure_data, 
-                    cmap='hot',
-                    aspect='auto',
-                    vmin=self.y_lim[0],
-                    vmax=self.y_lim[1]
-                )
-                self.ax_pressure.set_title("压力分布 (2D)", fontsize=12, color='white')
-                self.setup_2d_style()
+            print(f"🎨 开始渲染2D热力图，数据形状: {pressure_data.shape}")
+            print(f"🎨 2D视图可见性: {self.pressure_2d_widget.isVisible()}")
+            
+            # 确保2D视图可见
+            if not self.pressure_2d_widget.isVisible():
+                print("⚠️ 2D视图不可见，尝试设置为可见")
+                self.pressure_2d_widget.setVisible(True)
+            
+            # 清除当前2D视图
+            self.pressure_2d_widget.clear()
+            
+            # 创建PyQtGraph图像项
+            self.pressure_image_item = pg.ImageItem()
+            self.pressure_2d_widget.addItem(self.pressure_image_item)
+            
+            # 处理数据格式
+            if isinstance(pressure_data, dict):
+                display_data = pressure_data['data']
+                print(f"🎨 使用预处理数据，形状: {display_data.shape}")
             else:
-                # 完整2D渲染
-                self.render_2d_heatmap(pressure_data)
+                display_data = pressure_data
             
-        except Exception as e:
-            print(f"❌ 2D热力图渲染失败: {e}")
-    
-    def get_3d_rendering_options_optimized(self):
-        """根据性能模式获取优化的3D渲染选项"""
-        if self.performance_mode == "低性能":
-            return {
-                'enable_3d_lighting': False,
-                'enable_3d_shadows': False,
-                'enable_wireframe': False,  # 低性能模式强制禁用线框
-                'enable_anti_aliasing': False,
-                'surface_alpha_3d': 1.0
-            }
-        elif self.performance_mode == "标准":
-            return {
-                'enable_3d_lighting': True,
-                'enable_3d_shadows': False,
-                'enable_wireframe': self.enable_wireframe,  # 使用用户设置
-                'enable_anti_aliasing': True,
-                'surface_alpha_3d': 0.9
-            }
-        else:
-            # 高性能和极限模式使用用户设置
-            return {
-                'enable_3d_lighting': self.enable_3d_lighting,
-                'enable_3d_shadows': self.enable_3d_shadows,
-                'enable_wireframe': self.enable_wireframe,  # 使用用户设置
-                'enable_anti_aliasing': self.enable_anti_aliasing,
-                'surface_alpha_3d': self.surface_alpha_3d
-            }
-    
-    def apply_3d_smoothing(self, data):
-        """应用3D平滑处理"""
-        try:
-            from scipy.ndimage import gaussian_filter
-            # 应用更强的平滑
-            smoothed = gaussian_filter(data, sigma=1.5)
+            # 🔧 修复坐标映射问题：转置数据确保正确的显示方向
+            # numpy数组的索引是 [行, 列]，对应 [Y, X]
+            # PyQtGraph的ImageItem期望数据格式为 [Y, X]，但我们的数据生成方式需要转置
+            # 转置数据：从 [64, 64] 变为 [64, 64]，但交换行列的含义
+            display_data = display_data.T  # 转置数据
+            print(f"🎨 转置后数据形状: {display_data.shape}")
+            print(f"🎨 数据范围: [{display_data.min():.6f}, {display_data.max():.6f}]")
             
-            # 应用双边滤波（如果可用）
+            # 🎨 添加平滑处理 - 使用高斯模糊
+            if hasattr(self, 'gaussian_sigma') and self.gaussian_sigma > 0:
+                from scipy.ndimage import gaussian_filter
+                display_data = gaussian_filter(display_data, sigma=self.gaussian_sigma)
+                print(f"🎨 应用高斯平滑，sigma={self.gaussian_sigma}")
+            
+            # 🎨 使用固定的颜色范围 0-0.005
+            color_min, color_max = 0.0, 0.005
+            print(f"🎨 使用固定颜色范围: [{color_min}, {color_max}]")
+            
+            # 设置图像数据 - 使用转置后的数据
+            print(f"🎨 设置图像数据，颜色范围: [{color_min:.6f}, {color_max:.6f}]")
+            self.pressure_image_item.setImage(
+                display_data,
+                levels=(color_min, color_max)
+            )
+            
+            # 🎨 设置颜色映射 - 使用plasma颜色映射
+            self.pressure_image_item.setColorMap(pg.colormap.get('plasma'))
+            
+            # 🎨 添加色条
             try:
-                from scipy.ndimage import uniform_filter
-                # 简单的边缘保持平滑
-                edge_preserved = uniform_filter(smoothed, size=2)
-                return edge_preserved
-            except:
-                return smoothed
-        except ImportError:
-            # 如果没有scipy，使用简单的均值滤波
-            from scipy.ndimage import uniform_filter
-            return uniform_filter(data, size=3)
-    
-    def create_enhanced_colormap(self):
-        """创建增强的颜色映射 - 集成utils颜色方案"""
-        if self.use_custom_colormap:
-            # 🎨 使用utils的颜色映射方案
-            if UTILS_AVAILABLE:
-                # 使用utils的9级颜色映射
-                enhanced_colors = []
-                for color in COLORS:
-                    # 将RGB值转换为0-1范围
-                    enhanced_colors.append([c/255.0 for c in color])
-                
-                # 创建颜色映射位置
-                pos = np.linspace(0, 1, len(enhanced_colors))
-                
-                # 创建LinearSegmentedColormap
-                cmap = LinearSegmentedColormap.from_list('utils_enhanced', list(zip(pos, enhanced_colors)))
-                print(f"🎨 使用utils颜色映射: {len(enhanced_colors)}级")
-                return cmap
-            else:
-                # 回退到原来的颜色映射
-                enhanced_colors = [
-                    [0, 0, 0],        # 纯黑
-                    [20, 20, 60],     # 深蓝黑
-                    [40, 40, 120],    # 深蓝
-                    [60, 120, 200],   # 蓝色
-                    [100, 180, 255],  # 浅蓝
-                    [150, 220, 255],  # 天蓝
-                    [200, 240, 255],  # 极浅蓝
-                    [255, 255, 200],  # 浅黄
-                    [255, 220, 100],  # 黄色
-                    [255, 180, 50],   # 橙色
-                    [255, 120, 20],   # 红橙
-                    [255, 60, 10],    # 红色
-                    [200, 20, 5],     # 深红
-                    [120, 10, 2]      # 暗红
-                ]
-                
-                # 归一化颜色
-                enhanced_colors = np.array(enhanced_colors) / 255.0
-                
-                # 创建颜色映射
-                pos = np.linspace(0, 1, len(enhanced_colors))
-                cmap = LinearSegmentedColormap.from_list('enhanced_pressure', list(zip(pos, enhanced_colors)))
-                print(f"🎨 使用默认颜色映射: {len(enhanced_colors)}级")
-                return cmap
-        else:
-            return self.pressure_colormap
-    
-    def setup_3d_style_clean(self):
-        """设置3D样式 - 去除网格和轴"""
-        # 设置背景色
-        self.ax_pressure.set_facecolor('black')
-        
-        # 🎨 去除所有网格
-        self.ax_pressure.grid(False)
-        
-        # 🎨 去除xoz和yoz面的格子
-        self.ax_pressure.xaxis.pane.fill = False
-        self.ax_pressure.yaxis.pane.fill = False
-        self.ax_pressure.zaxis.pane.fill = False
-        
-        # 🎨 去除轴线边缘
-        self.ax_pressure.xaxis.pane.set_edgecolor('none')
-        self.ax_pressure.yaxis.pane.set_edgecolor('none')
-        self.ax_pressure.zaxis.pane.set_edgecolor('none')
-        
-        # 🎨 去除刻度线
-        self.ax_pressure.set_xticks([])
-        self.ax_pressure.set_yticks([])
-        self.ax_pressure.set_zticks([])
-        
-        # 🎨 去除刻度标签
-        self.ax_pressure.set_xticklabels([])
-        self.ax_pressure.set_yticklabels([])
-        self.ax_pressure.set_zticklabels([])
-        
-        # 🎨 去除轴线标签
-        self.ax_pressure.xaxis.label.set_text("")
-        self.ax_pressure.yaxis.label.set_text("")
-        self.ax_pressure.zaxis.label.set_text("")
-        
-        # 🎨 去除轴线
-        self.ax_pressure.xaxis.line.set_color('none')
-        self.ax_pressure.yaxis.line.set_color('none')
-        self.ax_pressure.zaxis.line.set_color('none')
-        
-        # 🎨 去除刻度线
-        self.ax_pressure.xaxis.set_tick_params(length=0)
-        self.ax_pressure.yaxis.set_tick_params(length=0)
-        self.ax_pressure.zaxis.set_tick_params(length=0)
-    
-    def apply_bloom_effect(self, data):
-        """应用泛光效果"""
-        try:
-            # 创建高亮区域
-            threshold = np.percentile(data, 95)  # 95%分位数作为阈值
-            bright_areas = data > threshold
+                # 创建色条
+                colorbar = pg.ColorBarItem(
+                    values=(color_min, color_max),
+                    colorMap=pg.colormap.get('plasma')
+                )
+                colorbar.setImageItem(self.pressure_image_item)
+                print("✅ 色条已添加")
+            except Exception as e:
+                print(f"⚠️ 色条添加失败: {e}")
             
-            # 在高亮区域添加额外的发光效果
-            if np.any(bright_areas):
-                # 这里可以添加更复杂的泛光效果
-                pass
-        except Exception as e:
-            print(f"⚠️ 泛光效果应用失败: {e}")
-    
-    def render_2d_heatmap(self, pressure_data):
-        """渲染2D热力图 - 扩大显示区域版"""
-        try:
-            # 清除当前子图并重新创建2D子图
-            self.ax_pressure.remove()
-            self.ax_pressure = self.fig.add_subplot(1, 5, (3, 5))  # 使用新的布局：占3/5宽度
+            # 设置标题
+            self.pressure_2d_widget.setTitle("压力分布 (2D)", color='w', size='12pt')
             
-            # 🎨 应用平滑处理
-            smoothed_data = self.apply_2d_smoothing(pressure_data)
+            # 🎨 去掉坐标轴 - 设置64x64显示区域
+            # 隐藏坐标轴标签
+            self.pressure_2d_widget.setLabel('left', '', color='w')
+            self.pressure_2d_widget.setLabel('bottom', '', color='w')
             
-            # 🎨 创建增强的颜色映射
-            enhanced_colormap = self.create_enhanced_colormap()
+            # 隐藏坐标轴刻度
+            self.pressure_2d_widget.getAxis('left').setTicks([])
+            self.pressure_2d_widget.getAxis('bottom').setTicks([])
             
-            # 绘制2D热力图 - 扩大显示区域版
-            im = self.ax_pressure.imshow(
-                smoothed_data, 
-                cmap=enhanced_colormap,
-                aspect='equal',
-                origin='upper',
-                vmin=self.y_lim[0],
-                vmax=self.y_lim[1],
-                interpolation='gaussian' if self.enable_anti_aliasing else 'nearest'
-            )
+            # 隐藏坐标轴线
+            self.pressure_2d_widget.getAxis('left').setPen(None)
+            self.pressure_2d_widget.getAxis('bottom').setPen(None)
             
-            # 🎨 添加等高线 - 2D模式不需要等高线
-            # if self.enable_3d_shadows:
-            #     contour = self.ax_pressure.contour(
-            #         smoothed_data,
-            #         levels=8,
-            #         colors='white',
-            #         alpha=0.3,
-            #         linewidths=0.5
-            #     )
+            # 🔧 确保坐标轴范围正确 - 64x64显示区域
+            self.pressure_2d_widget.setXRange(0, 63, padding=0)
+            self.pressure_2d_widget.setYRange(0, 63, padding=0)
             
-            # 设置标签和标题
-            self.ax_pressure.set_title("压力分布 (2D 2:3比例布局)", fontsize=12, fontweight='bold', color='white')
-            # 🎨 去除轴标签，因为已经去除了坐标轴
-            # self.ax_pressure.set_xlabel("X", color='white')
-            # self.ax_pressure.set_ylabel("Y", color='white')
+            # 🎨 设置图像项的位置和大小，确保完全填充64x64区域
+            self.pressure_image_item.setRect(pg.QtCore.QRectF(0, 0, 64, 64))
             
-            # 🎨 添加颜色条 - 扩大版
-            if hasattr(self, 'pressure_colorbar') and self.pressure_colorbar is not None:
-                try:
-                    self.pressure_colorbar.remove()
-                except:
-                    pass
-            
-            self.pressure_colorbar = self.fig.colorbar(
-                im, 
-                ax=self.ax_pressure,
-                shrink=0.9,  # 增加颜色条大小
-                aspect=25,   # 调整颜色条比例
-                pad=0.15     # 增加颜色条间距
-            )
-            self.pressure_colorbar.set_label('压力值', rotation=270, labelpad=20, color='white', fontsize=10)
-            self.pressure_colorbar.ax.tick_params(colors='white', labelsize=9)
-            
-            # 🎨 设置2D样式 - 去除坐标轴
-            self.setup_2d_style()
-            
-            print("🎨 2D热力图渲染完成 (2:3比例布局)")
+            print("✅ 2D热力图渲染完成 - 已添加平滑处理，去掉坐标轴")
             
         except Exception as e:
             print(f"❌ 2D热力图渲染失败: {e}")
             import traceback
             traceback.print_exc()
     
-    def apply_2d_smoothing(self, data):
-        """应用2D平滑处理"""
-        try:
-            from scipy.ndimage import gaussian_filter
-            # 应用高斯平滑
-            smoothed = gaussian_filter(data, sigma=1.2)
+    def check_target_reached(self):
+        """检查目标是否达成并触发烟花效果"""
+        # 🎯 优化：只在有路径数据时才进行详细检查
+        if (hasattr(self, 'path_manager') and self.path_manager and 
+            hasattr(self.path_manager, 'path_progress') and 
+            self.path_manager.path_progress):
             
-            # 应用边缘保持滤波
-            try:
-                from scipy.ndimage import uniform_filter
-                edge_preserved = uniform_filter(smoothed, size=2)
-                return edge_preserved
-            except:
-                return smoothed
-        except ImportError:
-            # 如果没有scipy，使用简单的均值滤波
-            from scipy.ndimage import uniform_filter
-            return uniform_filter(data, size=3)
+            progress = self.path_manager.path_progress
+            
+            # 检查是否在路径模式下且已完成所有路径点
+            is_path_mode = self.path_manager.has_navigation
+            is_completed = progress.get('is_completed', False)
+            
+            # 🎯 优化：使用智能调试输出
+            self.debug_print(f"🔍 路径状态: 模式={is_path_mode}, 完成={is_completed}", level=2, frequency=30)
+            
+            if is_path_mode and is_completed:
+                # 检查箱子是否到达最终目标位置
+                distance_to_target = np.linalg.norm(self.box_position - self.box_target_position)
+                
+                if distance_to_target < 0.5:
+                    # 只在首次达成时触发烟花
+                    if not self.last_target_reached:
+                        self.debug_print("🎆 目标达成！触发烟花效果", level=1)
+                        self.add_firework_effect()
+                        self.last_target_reached = True
+                else:
+                    # 如果箱子离开目标位置，重置触发状态
+                    if self.last_target_reached:
+                        self.debug_print(f"🔍 箱子离开目标位置，重置烟花触发状态", level=2)
+                    self.last_target_reached = False
+            else:
+                # 重置触发状态
+                if self.last_target_reached:
+                    self.debug_print(f"🔍 路径未完成，重置烟花触发状态", level=2)
+                self.last_target_reached = False
+        else:
+            # 没有路径数据，重置触发状态
+            if self.last_target_reached:
+                self.debug_print(f"🔍 无路径数据，重置烟花触发状态", level=2)
+            self.last_target_reached = False
     
-    def setup_2d_style(self):
-        """设置2D样式 - 去除坐标轴"""
-        # 设置背景色
-        self.ax_pressure.set_facecolor('black')
+    def add_firework_effect(self):
+        """在目标位置添加烟花效果"""
+        if len(self.fireworks) >= self.max_fireworks:
+            return
         
-        # 🎨 去除所有坐标轴
-        self.ax_pressure.set_xticks([])
-        self.ax_pressure.set_yticks([])
+        # 在目标位置生成15个烟花粒子
+        for _ in range(15):
+            # 随机角度和距离
+            angle = np.random.uniform(0, 2 * np.pi)
+            distance = np.random.uniform(2, 8)
+            
+            # 计算粒子位置
+            x = self.box_target_position[0] + distance * np.cos(angle)
+            y = self.box_target_position[1] + distance * np.sin(angle)
+            
+            # 随机速度
+            vx = np.random.uniform(-2, 2)
+            vy = np.random.uniform(-3, -1)  # 向上飞
+            
+            # 随机颜色
+            colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'white']
+            color = np.random.choice(colors)
+            
+            # 随机大小
+            size = np.random.uniform(3, 8)
+            
+            # 创建烟花粒子
+            firework = {
+                'x': x, 'y': y,
+                'vx': vx, 'vy': vy,
+                'color': color,
+                'size': size,
+                'lifetime': self.firework_lifetime
+            }
+            
+            self.fireworks.append(firework)
         
-        # 🎨 去除刻度标签
-        self.ax_pressure.set_xticklabels([])
-        self.ax_pressure.set_yticklabels([])
-        
-        # 🎨 去除轴线
-        for spine in self.ax_pressure.spines.values():
-            spine.set_visible(False)
-        
-        # 🎨 去除网格
-        self.ax_pressure.grid(False)
+        # 🎯 优化：只在首次触发时输出信息
+        self.debug_print(f"🎆 烟花效果已触发 ({len(self.fireworks)}个粒子)", level=1)
     
-    def set_3d_rendering_options(self, options):
-        """设置3D渲染选项"""
-        if 'enable_3d_lighting' in options:
-            self.enable_3d_lighting = options['enable_3d_lighting']
-        if 'enable_3d_shadows' in options:
-            self.enable_3d_shadows = options['enable_3d_shadows']
-        if 'enable_3d_animation' in options:
-            self.enable_3d_animation = options['enable_3d_animation']
-        if 'elevation_3d' in options:
-            self.elevation_3d = options['elevation_3d']
-        if 'azimuth_3d' in options:
-            self.azimuth_3d = options['azimuth_3d']
-        if 'rotation_speed_3d' in options:
-            self.rotation_speed_3d = options['rotation_speed_3d']
-        if 'surface_alpha_3d' in options:
-            self.surface_alpha_3d = options['surface_alpha_3d']
-        if 'enable_wireframe' in options:
-            self.enable_wireframe = options['enable_wireframe']
-        if 'enable_anti_aliasing' in options:
-            self.enable_anti_aliasing = options['enable_anti_aliasing']
-        if 'enable_bloom_effect' in options:
-            self.enable_bloom_effect = options['enable_bloom_effect']
-        
-        # 🎨 添加重置到固定45度视角的选项
-        if 'reset_to_fixed_45' in options and options['reset_to_fixed_45']:
-            self.reset_3d_view_to_fixed_45()
-        
-        print(f"🎨 3D渲染选项已更新: {list(options.keys())}")
+    def update_fireworks(self):
+        """更新烟花粒子状态"""
+        for firework in self.fireworks[:]:  # 使用切片复制避免修改迭代列表
+            # 更新位置
+            firework['x'] += firework['vx']
+            firework['y'] += firework['vy']
+            
+            # 添加重力效果
+            firework['vy'] -= 0.1
+            
+            # 减少生命值
+            firework['lifetime'] -= 1
+            
+            # 移除死亡的粒子
+            if firework['lifetime'] <= 0:
+                self.fireworks.remove(firework)
     
-    def reset_3d_view_to_fixed_45(self):
-        """重置3D视角到固定的45度显示"""
-        self.elevation_3d = 45
-        self.azimuth_3d = 315  # 修正为315度（-45度）
-        self.rotation_speed_3d = 0.0
-        self.enable_3d_animation = False
-        print("🎨 3D视角已重置为固定45度仰角，315度方位角")
+    def check_y_axis_settings(self):
+        """检查当前y轴设置"""
+        try:
+            print("🔍 检查当前y轴设置:")
+            
+            # 检查游戏区域y轴设置
+            game_y_inverted = self.game_plot_widget.getViewBox().yInverted()
+            game_y_range = self.game_plot_widget.getViewBox().viewRange()[1]
+            print(f"🔍 游戏区域y轴方向: {'向下' if game_y_inverted else '向上'}")
+            print(f"🔍 游戏区域y轴范围: {game_y_range[0]:.1f} 到 {game_y_range[1]:.1f}")
+            
+            # 检查2D压力视图y轴设置
+            pressure_y_inverted = self.pressure_2d_widget.getViewBox().yInverted()
+            pressure_y_range = self.pressure_2d_widget.getViewBox().viewRange()[1]
+            print(f"🔍 2D压力视图y轴方向: {'向下' if pressure_y_inverted else '向上'}")
+            print(f"🔍 2D压力视图y轴范围: {pressure_y_range[0]:.1f} 到 {pressure_y_range[1]:.1f}")
+            
+            # 判断设置是否正确 - 参考test_y_axis.py的检查逻辑
+            if game_y_inverted and game_y_range[0] == 0 and game_y_range[1] == 63:
+                print("✅ 游戏区域y轴设置正确: 向下，0在顶部，63在底部")
+            else:
+                print("❌ 游戏区域y轴设置错误")
+                
+            if pressure_y_inverted and pressure_y_range[0] == 0 and pressure_y_range[1] == 63:
+                print("✅ 2D压力视图y轴设置正确: 向下，0在顶部，63在底部")
+            else:
+                print("❌ 2D压力视图y轴设置错误")
+                
+        except Exception as e:
+            print(f"⚠️ 检查y轴设置失败: {e}")
     
-    def get_3d_rendering_options(self):
-        """获取当前3D渲染选项"""
-        return {
-            'enable_3d_lighting': self.enable_3d_lighting,
-            'enable_3d_shadows': self.enable_3d_shadows,
-            'enable_3d_animation': self.enable_3d_animation,
-            'elevation_3d': self.elevation_3d,
-            'azimuth_3d': self.azimuth_3d,
-            'rotation_speed_3d': self.rotation_speed_3d,
-            'surface_alpha_3d': self.surface_alpha_3d,
-            'enable_wireframe': self.enable_wireframe,
-            'enable_anti_aliasing': self.enable_anti_aliasing,
-            'enable_bloom_effect': self.enable_bloom_effect
-        }
-    
-    def setup_3d_style(self):
-        """设置3D样式 - 原始版本（保留兼容性）"""
-        # 设置背景色
-        self.ax_pressure.set_facecolor('black')
-        
-        # 设置刻度颜色
-        self.ax_pressure.tick_params(colors='white', labelsize=8)
-        
-        # 设置轴线颜色
-        self.ax_pressure.xaxis.pane.fill = False
-        self.ax_pressure.yaxis.pane.fill = False
-        self.ax_pressure.zaxis.pane.fill = False
-        
-        # 设置轴线边缘颜色
-        self.ax_pressure.xaxis.pane.set_edgecolor('white')
-        self.ax_pressure.yaxis.pane.set_edgecolor('white')
-        self.ax_pressure.zaxis.pane.set_edgecolor('white')
-        
-        # 设置网格
-        self.ax_pressure.grid(True, alpha=0.3, color='gray')
-        
-        # 设置轴线标签颜色
-        self.ax_pressure.xaxis.label.set_color('white')
-        self.ax_pressure.yaxis.label.set_color('white')
-        self.ax_pressure.zaxis.label.set_color('white')
-        
-        # 设置刻度标签颜色
-        self.ax_pressure.xaxis.set_tick_params(labelcolor='white')
-        self.ax_pressure.yaxis.set_tick_params(labelcolor='white')
-        self.ax_pressure.zaxis.set_tick_params(labelcolor='white')
-

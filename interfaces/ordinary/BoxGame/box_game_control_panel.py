@@ -432,9 +432,26 @@ class BoxGameControlPanel(QWidget):
         if is_checked:
             self.path_guide_btn.setText("🗺️ 关闭引导")
             print("🗺️ 路径引导已开启")
+            
+            # 🎨 路径引导开启时自动切换到2D模式
+            if self.heatmap_2d_3d_btn.text() == "3D热力图":
+                print("🎨 路径引导模式：自动切换到2D热力图以提高性能")
+                self.heatmap_2d_3d_btn.setText("2D热力图")
+                self.heatmap_2d_3d_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                """)
+                # 发送切换到2D模式的信号
+                self.visualization_changed.emit({'toggle_heatmap_mode': True})
         else:
             self.path_guide_btn.setText("🗺️ 开启引导")
             print("🗺️ 路径引导已关闭")
+            # 关闭路径引导时保持当前的热力图模式，不自动切换
         
         # 如果有选择路径，发送路径模式请求
         if path_name and path_name != "请选择路径":
@@ -446,6 +463,22 @@ class BoxGameControlPanel(QWidget):
     def on_path_selected(self, path_name):
         # 如果路径引导按钮已开启，自动启用路径模式
         if self.path_guide_btn.isChecked() and path_name != "请选择路径":
+            # 🎨 路径引导开启且选择路径时，确保切换到2D模式
+            if self.heatmap_2d_3d_btn.text() == "3D热力图":
+                print("🎨 路径引导模式：自动切换到2D热力图以提高性能")
+                self.heatmap_2d_3d_btn.setText("2D热力图")
+                self.heatmap_2d_3d_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                """)
+                # 发送切换到2D模式的信号
+                self.visualization_changed.emit({'toggle_heatmap_mode': True})
+            
             self.path_mode_requested.emit(path_name, True)
 
     def on_path_reset_clicked(self):
@@ -537,7 +570,7 @@ class BoxGameControlPanel(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)  # 减少内边距
         layout.setSpacing(5)  # 减少间距
 
-        # 2D/3D热力图切换
+        # 2D/3D热力图切换 - 初始状态为3D模式
         self.heatmap_2d_3d_btn = QPushButton("3D热力图")
         self.heatmap_2d_3d_btn.clicked.connect(self.on_heatmap_2d_3d_clicked)
         # 设置初始样式为3D模式

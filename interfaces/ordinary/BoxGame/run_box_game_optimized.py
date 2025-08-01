@@ -355,12 +355,26 @@ class SensorDataThread(QThread):
     
     def run(self):
         """线程主循环"""
+        frame_count = 0
+        last_time = time.time()
+        
         while self.running:
             try:
                 if self.sensor_interface:
                     pressure_data = self.sensor_interface.get_pressure_matrix()
                     if pressure_data is not None:
                         self.data_received.emit(pressure_data)
+                        frame_count += 1
+                        
+                        # 🕐 每100帧显示一次实际帧率
+                        if frame_count % 100 == 0:
+                            current_time = time.time()
+                            elapsed = current_time - last_time
+                            actual_fps = 100 / elapsed if elapsed > 0 else 0
+                            expected_fps = 1000 / FrameRateConfig.get_interval_ms("sensor_fps")
+                            print(f"📡 传感器实际帧率: {actual_fps:.1f} FPS (期望: {expected_fps:.1f} FPS)")
+                            print(f"📊 传感器配置: {FrameRateConfig.current_mode}模式, 间隔: {FrameRateConfig.get_interval_ms('sensor_fps')}ms")
+                            last_time = current_time
                 
                 # 🚀 使用动态帧率配置
                 interval_ms = FrameRateConfig.get_interval_ms("sensor_fps")

@@ -1,39 +1,12 @@
 # -*- coding: utf-8 -*-
-"""
-推箱子游戏渲染模块 - 优化版
-Box Game Renderer Module - Optimized Version
-
-负责游戏界面显示和可视化渲染，消除重复代码，优化路径可视化
-"""
-
+import pyqtgraph as pg
+from PyQt5.QtCore import QTimer, Qt
 import numpy as np
 
-
-# Matplotlib 相关导入
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.patches import Rectangle, Circle, FancyBboxPatch, Arrow, Polygon
-
-from typing import Dict
-
-# 导入路径规划模块
-try:
-    from interfaces.ordinary.BoxGame.box_game_path_planning import PathPlanningGameEnhancer
-    PATH_PLANNING_AVAILABLE = True
-except ImportError:
-    PATH_PLANNING_AVAILABLE = False
-    print("⚠️ 路径规划模块未找到，禁用路径功能")
-
-import matplotlib
-matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']  # 任选其一
-matplotlib.rcParams['axes.unicode_minus'] = False  # 负号正常显示
-
 class PathVisualizationManager:
-    """路径可视化管理器 - 专门处理路径相关的可视化"""
-    
-    def __init__(self, ax_game):
-        self.ax_game = ax_game
+    def __init__(self, plot_widget):
+        self.plot_widget = plot_widget
+        self.path_items = []
         
         # 路径数据
         self.current_path_points = []
@@ -44,31 +17,35 @@ class PathVisualizationManager:
         self.direction_angle = 0.0
         self.has_navigation = False
         
-        # 路径可视化选项
-        self.show_path_line = True
-        self.show_path_points = True
-        self.show_target_markers = True
-        self.show_progress_info = True
-        self.show_navigation_arrows = True
-        self.show_prediction_line = False
-        
         # 动画相关
         self.animation_time = 0.0
         self.pulse_speed = 2.0
         
-        # 渲染对象缓存
-        self.path_artists = []
+        # 动画定时器
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self.update_animation)
+        self.animation_timer.start(50)  # 20 FPS
+    
+    def update_animation(self):
+        """更新动画时间"""
+        self.animation_time += 0.05
+        if self.has_navigation and self.current_path_points:
+            self.render_complete_path_visualization(None)
     
     def clear_path_visualization(self):
-        """清除所有路径可视化元素"""
-        for artist in self.path_artists:
+        """清除路径可视化项目"""
+        print(f"🗑️ 清除路径可视化，当前项目数量: {len(self.path_items)}")
+        for item in self.path_items:
             try:
-                artist.remove()
-            except:
-                pass
-        self.path_artists.clear()
+                self.plot_widget.removeItem(item)
+                print(f"🗑️ 已移除路径项目: {type(item).__name__}")
+            except Exception as e:
+                print(f"⚠️ 移除路径项目失败: {e}")
+        self.path_items.clear()
+        print(f"🗑️ 路径可视化清除完成")
     
-    def update_path_data(self, path_data: Dict):
+    def update_path_data(self, path_data):
+        """更新路径数据"""
         print("路径点：", path_data.get('path_points', []))
         self.current_path_points = path_data.get('path_points', [])
         self.current_target = path_data.get('current_target')
@@ -87,6 +64,8 @@ class PathVisualizationManager:
     
     def render_complete_path_visualization(self, box_position):
         """渲染完整的路径可视化"""
+        print(f"🎨 开始渲染路径可视化，路径点数: {len(self.current_path_points)}, 导航状态: {self.has_navigation}")
+        
         # 🗑️ 如果没有路径点，清除所有路径可视化
         if not self.current_path_points:
             self.clear_path_visualization()
@@ -98,266 +77,316 @@ class PathVisualizationManager:
             return
         
         self.clear_path_visualization()
-        self.animation_time += 0.1
         
-        # 🗺️ 绘制完整路径线条
-        if self.show_path_line and len(self.current_path_points) > 1:
-            self._render_path_line()
+        # 渲染路径线条
+        self._render_path_line()
         
-        # 🎯 绘制路径点
-        if self.show_path_points:
-            self._render_path_points()
+        # 渲染路径点
+        self._render_path_points()
         
-        # 🎯 高亮当前目标
-        if self.show_target_markers and self.current_target:
+        # 渲染当前目标
+        if self.current_target:
             self._render_current_target(box_position)
         
-        # 🔮 绘制下一个目标（预览）
-        if self.show_target_markers and self.next_target:
+        # 渲染下一个目标
+        if self.next_target:
             self._render_next_target()
         
-        # 📈 绘制进度信息
-        if self.show_progress_info and self.path_progress:
-            self._render_progress_info()
+        # 渲染进度信息
+        self._render_progress_info()
         
-        # 🧭 绘制导航信息
-        if self.show_navigation_arrows:
+        # 渲染导航信息
+        if box_position is not None:
             self._render_navigation_info(box_position)
-        
-        # 🔮 绘制预测轨迹
-        if self.show_prediction_line:
-            self._render_prediction_trajectory(box_position)
     
     def _render_path_line(self):
         """渲染路径线条"""
+        if len(self.current_path_points) < 2:
+            return
+            
         path_x = [point['x'] for point in self.current_path_points]
         path_y = [point['y'] for point in self.current_path_points]
         
-        # 根据完成状态绘制不同颜色的线段
+        print(f"🔗 开始渲染路径线条，总点数: {len(self.current_path_points)}")
+        
+        # 预先分析连接类型，找出所有断点位置
+        break_points = []
+        for i, point in enumerate(self.current_path_points):
+            connection_type = point.get('connection_type', 'solid')
+            if connection_type == 'none':
+                break_points.append(i)
+                print(f"🔗 发现断点: 点{i} ({point['x']}, {point['y']})")
+        
+        print(f"🔗 断点位置: {break_points}")
+        
+        # 根据完成状态和连接类型绘制不同颜色的线段
         for i in range(len(path_x) - 1):
             point = self.current_path_points[i]
+            next_point = self.current_path_points[i + 1]
             is_completed = point.get('completed', False)
             
-            if is_completed:
-                line_color = 'lightgreen'
-                line_alpha = 0.8
-                line_style = '-'
-            else:
-                line_color = 'cyan'
-                line_alpha = 0.6
-                line_style = '--'
+            # 🆕 检查连接类型 - 如果当前点的连接类型为"none"，则不绘制连线
+            connection_type = point.get('connection_type', 'solid')
+            next_connection_type = next_point.get('connection_type', 'solid')
             
-            line = self.ax_game.plot([path_x[i], path_x[i+1]], [path_y[i], path_y[i+1]], 
-                                   line_style, color=line_color, linewidth=2, 
-                                   alpha=line_alpha, zorder=3)[0]
-            self.path_artists.append(line)
+            print(f"🔗 检查点{i}到点{i+1}的连接: 当前类型={connection_type}, 下一点类型={next_connection_type}")
+            
+            # 🆕 增强断点处理逻辑
+            skip_line = False
+            skip_reason = ""
+            
+            # 情况1：当前点是断点
+            if connection_type == 'none':
+                skip_line = True
+                skip_reason = "当前点是断点"
+            # 情况2：下一个点是断点
+            elif next_connection_type == 'none':
+                skip_line = True
+                skip_reason = "下一个点是断点"
+            # 情况3：当前点和下一个点都是断点
+            elif connection_type == 'none' and next_connection_type == 'none':
+                skip_line = True
+                skip_reason = "当前点和下一个点都是断点"
+            # 情况4：检查是否跨越断点（当前点不是断点，但下一个点是断点）
+            elif i + 1 in break_points:
+                skip_line = True
+                skip_reason = "跨越断点"
+            
+            if skip_line:
+                print(f"🔗 跳过连线: 点{i}到点{i+1} - {skip_reason}")
+                continue
+            
+            print(f"🔗 绘制连线: 点{i}到点{i+1} (类型={connection_type})")
+            
+            if is_completed:
+                line_color = (144, 238, 144)  # lightgreen RGB
+                line_alpha = 0.8
+                line_style = Qt.SolidLine
+            else:
+                line_color = (0, 255, 255)    # cyan RGB
+                line_alpha = 0.6
+                line_style = Qt.DashLine
+            
+            # 创建线段
+            line = pg.PlotDataItem(
+                x=[path_x[i], path_x[i+1]], 
+                y=[path_y[i], path_y[i+1]],
+                pen=pg.mkPen(color=line_color, width=2, style=line_style, alpha=line_alpha)
+            )
+            self.plot_widget.addItem(line)
+            self.path_items.append(line)
+        
+        # 统计绘制的连线数量
+        drawn_lines = len([i for i in range(len(self.current_path_points)-1) 
+                          if self.current_path_points[i].get('connection_type', 'solid') != 'none' and
+                          self.current_path_points[i+1].get('connection_type', 'solid') != 'none'])
+        
+        print(f"🔗 路径线条渲染完成，共绘制了 {drawn_lines} 条连线")
+        print(f"🔗 断点数量: {len(break_points)}, 断点位置: {break_points}")
     
     def _render_path_points(self):
         """渲染路径点"""
         for i, point in enumerate(self.current_path_points):
             point_x, point_y = point['x'], point['y']
             point_type = point.get('type', 'waypoint')
+            connection_type = point.get('connection_type', 'solid')
             is_completed = point.get('completed', False)
             is_current = point.get('is_current_target', False)
             
-            # 根据点类型和状态选择样式
-            if is_completed:
-                marker_color = 'lightgreen'
+            # 🆕 根据连接类型和点类型选择样式
+            if connection_type == 'none':
+                # 断开点使用红色X标记
+                marker_color = (255, 0, 0)      # red RGB
+                marker_symbol = 'x'
+                marker_size = 8
+                edge_color = (139, 0, 0)        # darkred RGB
+                print(f"🔗 绘制断开点: 点{i} ({point_x}, {point_y})")
+            elif is_completed:
+                marker_color = (144, 238, 144)  # lightgreen RGB
                 marker_symbol = 'o'
                 marker_size = 6
-                edge_color = 'darkgreen'
+                edge_color = (0, 100, 0)        # darkgreen RGB
             elif is_current:
                 # 当前目标点使用脉动效果
                 pulse_scale = 1 + 0.3 * np.sin(self.animation_time * self.pulse_speed)
-                marker_color = 'yellow'
+                marker_color = (255, 255, 0)    # yellow RGB
                 marker_symbol = 'o'
-                marker_size = 8 * pulse_scale
-                edge_color = 'orange'
+                marker_size = int(8 * pulse_scale)
+                edge_color = (255, 165, 0)      # orange RGB
             elif point_type == 'target':
-                marker_color = 'red'
-                marker_symbol = 'X'
+                marker_color = (255, 0, 0)      # red RGB
+                marker_symbol = 'x'
                 marker_size = 10
-                edge_color = 'darkred'
+                edge_color = (139, 0, 0)        # darkred RGB
             elif point_type == 'checkpoint':
-                marker_color = 'orange'
-                marker_symbol = 'D'
+                marker_color = (255, 165, 0)    # orange RGB
+                marker_symbol = 'd'
                 marker_size = 8
-                edge_color = 'darkorange'
+                edge_color = (255, 140, 0)      # darkorange RGB
             else:  # waypoint
-                marker_color = 'yellow'
+                marker_color = (255, 255, 0)    # yellow RGB
                 marker_symbol = 'o'
                 marker_size = 6
-                edge_color = 'gold'
+                edge_color = (255, 215, 0)      # gold RGB
             
             # 绘制路径点
-            point_artist = self.ax_game.plot(point_x, point_y, marker_symbol, 
-                                           color=marker_color, markersize=marker_size,
-                                           markeredgecolor=edge_color, markeredgewidth=1.5,
-                                           zorder=6)[0]
-            self.path_artists.append(point_artist)
+            point_item = pg.ScatterPlotItem(
+                x=[point_x], 
+                y=[point_y],
+                symbol=marker_symbol,
+                size=marker_size,
+                brush=marker_color,
+                pen=pg.mkPen(color=edge_color, width=1.5)
+            )
+            self.plot_widget.addItem(point_item)
+            self.path_items.append(point_item)
             
             # 为重要的点添加标签
-            if point_type in ['target', 'checkpoint'] or i == 0 or is_current:
+            if point_type in ['target', 'checkpoint'] or i == 0 or is_current or connection_type == 'none':
                 label_text = point.get('name', f'点{i+1}')
                 if is_current:
                     label_text += ' 🎯'
-                text_artist = self.ax_game.text(point_x, point_y + 3, label_text,
-                                              ha='center', va='bottom', color='white',
-                                              fontsize=8, fontweight='bold',
-                                              bbox=dict(boxstyle="round,pad=0.2", 
-                                                       facecolor='black', alpha=0.8))
-                self.path_artists.append(text_artist)
+                if connection_type == 'none':
+                    label_text += ' 🔗'
+                
+                # 创建文本项
+                text_item = pg.TextItem(
+                    text=label_text,
+                    color=(255, 255, 255),  # white RGB
+                    anchor=(0.5, 0)
+                )
+                text_item.setPos(point_x, point_y + 3)
+                self.plot_widget.addItem(text_item)
+                self.path_items.append(text_item)
     
     def _render_current_target(self, box_position):
         """渲染当前目标的高亮效果"""
+        if not self.current_target:
+            return
+            
         target_x, target_y = self.current_target['x'], self.current_target['y']
         
         # 脉动效果圆圈
         pulse_scale = 1 + 0.2 * np.sin(self.animation_time * self.pulse_speed * 1.5)
         
-        circle1 = Circle((target_x, target_y), 8 * pulse_scale, fill=False, 
-                        color='lime', linewidth=2, alpha=0.8, zorder=7)
-        circle2 = Circle((target_x, target_y), 12, fill=False, 
-                        color='lime', linewidth=1, alpha=0.4, zorder=7)
-        
-        self.ax_game.add_patch(circle1)
-        self.ax_game.add_patch(circle2)
-        self.path_artists.extend([circle1, circle2])
+        # 创建圆圈效果（使用ScatterPlotItem模拟）
+        circle_item = pg.ScatterPlotItem(
+            x=[target_x], 
+            y=[target_y],
+            symbol='o',
+            size=int(16 * pulse_scale),
+            brush=None,
+            pen=pg.mkPen(color=(0, 255, 0), width=2, alpha=0.8)  # lime RGB
+        )
+        self.plot_widget.addItem(circle_item)
+        self.path_items.append(circle_item)
         
         # 绘制指向目标的导航箭头
         if box_position is not None:
-            box_x, box_y = box_position
+            # 确保box_position是数组时正确提取坐标
+            if hasattr(box_position, '__len__') and len(box_position) >= 2:
+                box_x, box_y = box_position[0], box_position[1]
+            else:
+                box_x, box_y = box_position, box_position
+            
+            # 计算箭头方向
             dx = target_x - box_x
             dy = target_y - box_y
             distance = np.sqrt(dx*dx + dy*dy)
             
-            if distance > 8:  # 只在距离足够远时显示箭头
-                # 标准化方向向量
-                dx_norm = dx / distance * 6
-                dy_norm = dy / distance * 6
+            if distance > 0:
+                # 归一化方向向量
+                dx /= distance
+                dy /= distance
                 
-                # 绘制导航箭头 - 使用更好的箭头样式
-                arrow_props = dict(arrowstyle='->', lw=2, color='cyan', alpha=0.8)
-                arrow_artist = self.ax_game.annotate('', 
-                                                   xy=(box_x + dx_norm*3, box_y + dy_norm*3),
-                                                   xytext=(box_x + dx_norm, box_y + dy_norm),
-                                                   arrowprops=arrow_props, zorder=8)
-                self.path_artists.append(arrow_artist)
+                # 箭头起点和终点
+                arrow_start_x = box_x + dx * 15
+                arrow_start_y = box_y + dy * 15
+                arrow_end_x = target_x - dx * 5
+                arrow_end_y = target_y - dy * 5
                 
-                # 显示距离信息
-                distance_text = self.ax_game.text(target_x, target_y + 8, f'{distance:.1f}',
-                                                ha='center', va='bottom', color='white',
-                                                fontsize=8, fontweight='bold',
-                                                bbox=dict(boxstyle="round,pad=0.2", 
-                                                         facecolor='black', alpha=0.7))
-                self.path_artists.append(distance_text)
+                # 创建箭头
+                arrow = pg.PlotDataItem(
+                    x=[arrow_start_x, arrow_end_x],
+                    y=[arrow_start_y, arrow_end_y],
+                    pen=pg.mkPen(color=(0, 255, 0), width=3, alpha=0.8)  # lime RGB
+                )
+                self.plot_widget.addItem(arrow)
+                self.path_items.append(arrow)
     
     def _render_next_target(self):
-        """渲染下一个目标（预览）"""
+        """渲染下一个目标"""
+        if not self.next_target:
+            return
+            
         next_x, next_y = self.next_target['x'], self.next_target['y']
-        next_type = self.next_target.get('type', 'waypoint')
         
-        if next_type == 'target':
-            next_color, next_marker = 'darkred', 'X'
-        elif next_type == 'checkpoint':
-            next_color, next_marker = 'darkorange', 'D'
-        else:
-            next_color, next_marker = 'gold', 'o'
+        # 创建下一个目标标记
+        next_target_item = pg.ScatterPlotItem(
+            x=[next_x], 
+            y=[next_y],
+            symbol='s',
+            size=8,
+            brush=(0, 0, 255),      # blue RGB
+            pen=pg.mkPen(color=(0, 0, 139), width=1.5)  # darkblue RGB
+        )
+        self.plot_widget.addItem(next_target_item)
+        self.path_items.append(next_target_item)
         
-        # 绘制下一个目标（半透明）
-        next_artist = self.ax_game.plot(next_x, next_y, next_marker, color=next_color,
-                                      markersize=6, markeredgecolor='white',
-                                      markeredgewidth=1, alpha=0.5, zorder=5)[0]
-        self.path_artists.append(next_artist)
-        
-        # 添加"下一个"标签
-        next_text = self.ax_game.text(next_x, next_y - 3, '下一个',
-                                    ha='center', va='top', color='white',
-                                    fontsize=7, alpha=0.7,
-                                    bbox=dict(boxstyle="round,pad=0.2", 
-                                             facecolor='gray', alpha=0.6))
-        self.path_artists.append(next_text)
+        # 添加标签
+        text_item = pg.TextItem(
+            text="下一个目标",
+            color=(0, 0, 255),  # blue RGB
+            anchor=(0.5, 0)
+        )
+        text_item.setPos(next_x, next_y + 3)
+        self.plot_widget.addItem(text_item)
+        self.path_items.append(text_item)
     
     def _render_progress_info(self):
-        """渲染路径进度信息"""
-        total_points = self.path_progress.get('total_points', 0)
-        completed_points = self.path_progress.get('completed_points', 0)
-        progress_pct = self.path_progress.get('progress_percentage', 0)
-        
-        # 在右上角绘制进度信息
-        progress_text = f"路径进度: {completed_points}/{total_points} ({progress_pct:.1f}%)"
-        
+        """渲染进度信息"""
+        if not self.path_progress:
+            return
+            
+        # 在右上角显示进度信息
+        progress_text = f"进度: {self.path_progress.get('completed_points', 0)}/{self.path_progress.get('total_points', 0)}"
         if self.path_progress.get('is_completed', False):
-            progress_color = 'lime'
             progress_text += " ✅"
-        else:
-            progress_color = 'cyan'
         
-        progress_artist = self.ax_game.text(60, 58, progress_text, ha='right', va='top',
-                                          color=progress_color, fontsize=9, fontweight='bold',
-                                          bbox=dict(boxstyle="round,pad=0.3", 
-                                                   facecolor='black', alpha=0.8))
-        self.path_artists.append(progress_artist)
-        
-        # 绘制进度条
-        bar_width = 50
-        bar_height = 3
-        bar_x = 60 - bar_width
-        bar_y = 53
-        
-        # 背景条
-        bg_rect = Rectangle((bar_x, bar_y), bar_width, bar_height,
-                           facecolor='gray', alpha=0.5)
-        self.ax_game.add_patch(bg_rect)
-        self.path_artists.append(bg_rect)
-        
-        # 进度条
-        if total_points > 0:
-            progress_width = bar_width * (completed_points / total_points)
-            progress_rect = Rectangle((bar_x, bar_y), progress_width, bar_height,
-                                    facecolor=progress_color, alpha=0.8)
-            self.ax_game.add_patch(progress_rect)
-            self.path_artists.append(progress_rect)
+        # 创建进度文本
+        progress_item = pg.TextItem(
+            text=progress_text,
+            color=(255, 255, 255),  # white RGB
+            anchor=(1, 0)
+        )
+        # 设置位置在右上角
+        progress_item.setPos(self.plot_widget.viewRange()[0][1] - 10, 
+                           self.plot_widget.viewRange()[1][1] - 10)
+        self.plot_widget.addItem(progress_item)
+        self.path_items.append(progress_item)
     
     def _render_navigation_info(self, box_position):
         """渲染导航信息"""
-        if self.target_distance > 0 and box_position is not None:
-            # 在左下角显示导航信息
-            nav_text = f"🧭 距离: {self.target_distance:.1f}\n📐 方向: {self.direction_angle:.1f}°"
-            nav_artist = self.ax_game.text(5, 8, nav_text, ha='left', va='bottom',
-                                         color='cyan', fontsize=8, fontweight='bold',
-                                         bbox=dict(boxstyle="round,pad=0.3", 
-                                                  facecolor='black', alpha=0.8))
-            self.path_artists.append(nav_artist)
-    
-    def _render_prediction_trajectory(self, box_position):
-        """渲染预测轨迹"""
-        if box_position is None or not self.current_target:
+        if box_position is None:
             return
+            
+        # 显示距离和方向信息
+        info_text = f"距离: {self.target_distance:.1f}cm"
+        if self.direction_angle != 0:
+            info_text += f" | 方向: {self.direction_angle:.1f}°"
         
-        # 计算从当前位置到目标的预测轨迹
-        box_x, box_y = box_position
-        target_x, target_y = self.current_target['x'], self.current_target['y']
-        
-        # 简单的直线预测（可以根据需要改进为更复杂的轨迹预测）
-        pred_x = [box_x, target_x]
-        pred_y = [box_y, target_y]
-        
-        pred_line = self.ax_game.plot(pred_x, pred_y, ':', color='yellow', 
-                                    linewidth=1, alpha=0.6, zorder=2)[0]
-        self.path_artists.append(pred_line)
+        # 创建导航信息文本
+        nav_item = pg.TextItem(
+            text=info_text,
+            color=(0, 255, 255),  # cyan RGB
+            anchor=(0, 0)
+        )
+        nav_item.setPos(10, 10)
+        self.plot_widget.addItem(nav_item)
+        self.path_items.append(nav_item)
     
-    def set_visualization_options(self, options: Dict):
-        """设置可视化选项"""
-        self.show_path_line = options.get('show_path_line', True)
-        self.show_path_points = options.get('show_path_points', True)
-        self.show_target_markers = options.get('show_target_markers', True)
-        self.show_progress_info = options.get('show_progress_info', True)
-        self.show_navigation_arrows = options.get('show_navigation_arrows', True)
-        self.show_prediction_line = options.get('show_prediction_line', False)
-        self.pulse_speed = options.get('pulse_speed', 2.0)
-
-
-
-
-__all__ = [ 'PathVisualizationManager'] 
+    def cleanup(self):
+        """清理资源"""
+        if self.animation_timer:
+            self.animation_timer.stop()
+        self.clear_path_visualization()
