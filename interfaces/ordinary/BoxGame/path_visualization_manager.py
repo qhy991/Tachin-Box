@@ -119,53 +119,63 @@ class PathVisualizationManager:
         
         print(f"🔗 断点位置: {break_points}")
         
+        # 颜色映射字典
+        color_map = {
+            'red': (255, 0, 0),
+            'blue': (0, 0, 255),
+            'green': (0, 255, 0),
+            'yellow': (255, 255, 0),
+            'purple': (128, 0, 128),
+            'orange': (255, 165, 0),
+            'brown': (139, 69, 19),
+            'gold': (255, 215, 0),
+            'darkblue': (0, 0, 139),
+            'black': (0, 0, 0),
+            'gray': (128, 128, 128),
+            'default': (0, 255, 255)  # cyan
+        }
+        
         # 根据完成状态和连接类型绘制不同颜色的线段
         for i in range(len(path_x) - 1):
             point = self.current_path_points[i]
             next_point = self.current_path_points[i + 1]
-            is_completed = point.get('completed', False)
             
-            # 🆕 检查连接类型 - 如果当前点的连接类型为"none"，则不绘制连线
+            # 检查连接类型
             connection_type = point.get('connection_type', 'solid')
             next_connection_type = next_point.get('connection_type', 'solid')
             
             print(f"🔗 检查点{i}到点{i+1}的连接: 当前类型={connection_type}, 下一点类型={next_connection_type}")
             
-            # 🆕 增强断点处理逻辑
-            skip_line = False
-            skip_reason = ""
-            
-            # 情况1：当前点是断点
-            if connection_type == 'none':
-                skip_line = True
-                skip_reason = "当前点是断点"
-            # 情况2：下一个点是断点
-            elif next_connection_type == 'none':
-                skip_line = True
-                skip_reason = "下一个点是断点"
-            # 情况3：当前点和下一个点都是断点
-            elif connection_type == 'none' and next_connection_type == 'none':
-                skip_line = True
-                skip_reason = "当前点和下一个点都是断点"
-            # 情况4：检查是否跨越断点（当前点不是断点，但下一个点是断点）
-            elif i + 1 in break_points:
-                skip_line = True
-                skip_reason = "跨越断点"
-            
-            if skip_line:
-                print(f"🔗 跳过连线: 点{i}到点{i+1} - {skip_reason}")
+            # 🆕 优化的断点处理逻辑 - 只要任一点是断点就跳过连线
+            if connection_type == 'none' or next_connection_type == 'none':
+                print(f"🔗 跳过连线: 点{i}到点{i+1} - 存在断点")
                 continue
             
             print(f"🔗 绘制连线: 点{i}到点{i+1} (类型={connection_type})")
             
-            if is_completed:
-                line_color = (144, 238, 144)  # lightgreen RGB
-                line_alpha = 0.8
-                line_style = Qt.SolidLine
+            # 🎨 获取线条颜色
+            line_color_name = point.get('line_color', 'default')
+            if line_color_name in color_map:
+                line_color = color_map[line_color_name]
             else:
                 line_color = (0, 255, 255)    # cyan RGB
-                line_alpha = 0.6
+            
+            # 🎯 判断线段是否已完成（箱子已经走过）
+            # 如果当前点已完成，说明箱子已经到达过这个点，那么到这个点的路径就是实线
+            is_completed = point.get('completed', False)
+            
+            if is_completed:
+                # 已走过的路径：实线，更深的颜色
+                line_alpha = 0.9
+                line_style = Qt.SolidLine
+                # 稍微加深颜色以区分已完成和未完成
+                line_color = tuple(int(c * 0.8) for c in line_color)
+                print(f"🔗 绘制实线: 点{i}到点{i+1} (已完成)")
+            else:
+                # 未走过的路径：虚线，较浅的颜色
+                line_alpha = 0.5
                 line_style = Qt.DashLine
+                print(f"🔗 绘制虚线: 点{i}到点{i+1} (未完成)")
             
             # 创建线段
             line = pg.PlotDataItem(
@@ -186,6 +196,22 @@ class PathVisualizationManager:
     
     def _render_path_points(self):
         """渲染路径点"""
+        # 颜色映射字典
+        color_map = {
+            'red': (255, 0, 0),
+            'blue': (0, 0, 255),
+            'green': (0, 255, 0),
+            'yellow': (255, 255, 0),
+            'purple': (128, 0, 128),
+            'orange': (255, 165, 0),
+            'brown': (139, 69, 19),
+            'gold': (255, 215, 0),
+            'darkblue': (0, 0, 139),
+            'black': (0, 0, 0),
+            'gray': (128, 128, 128),
+            'default': (255, 255, 0)  # yellow
+        }
+        
         for i, point in enumerate(self.current_path_points):
             point_x, point_y = point['x'], point['y']
             point_type = point.get('type', 'waypoint')
@@ -193,38 +219,46 @@ class PathVisualizationManager:
             is_completed = point.get('completed', False)
             is_current = point.get('is_current_target', False)
             
+            # 🎨 获取点颜色
+            point_color_name = point.get('point_color', 'default')
+            if point_color_name in color_map:
+                marker_color = color_map[point_color_name]
+            else:
+                marker_color = (255, 255, 0)    # yellow RGB
+            
+            # 🎯 如果点已完成，稍微加深颜色以区分
+            if is_completed:
+                marker_color = tuple(int(c * 0.8) for c in marker_color)
+            
             # 🆕 根据连接类型和点类型选择样式
             if connection_type == 'none':
                 # 断开点使用红色X标记
-                marker_color = (255, 0, 0)      # red RGB
                 marker_symbol = 'x'
                 marker_size = 8
                 edge_color = (139, 0, 0)        # darkred RGB
                 print(f"🔗 绘制断开点: 点{i} ({point_x}, {point_y})")
             elif is_completed:
-                marker_color = (144, 238, 144)  # lightgreen RGB
+                # 已完成的点：实心圆，稍大
                 marker_symbol = 'o'
-                marker_size = 6
-                edge_color = (0, 100, 0)        # darkgreen RGB
+                marker_size = 8
+                edge_color = tuple(int(c * 0.6) for c in marker_color)  # 更深的边框
+                print(f"🔗 绘制已完成点: 点{i} ({point_x}, {point_y})")
             elif is_current:
                 # 当前目标点使用脉动效果
                 pulse_scale = 1 + 0.3 * np.sin(self.animation_time * self.pulse_speed)
-                marker_color = (255, 255, 0)    # yellow RGB
                 marker_symbol = 'o'
-                marker_size = int(8 * pulse_scale)
+                marker_size = int(10 * pulse_scale)
                 edge_color = (255, 165, 0)      # orange RGB
+                print(f"🔗 绘制当前目标点: 点{i} ({point_x}, {point_y})")
             elif point_type == 'target':
-                marker_color = (255, 0, 0)      # red RGB
                 marker_symbol = 'x'
-                marker_size = 10
+                marker_size = 12
                 edge_color = (139, 0, 0)        # darkred RGB
             elif point_type == 'checkpoint':
-                marker_color = (255, 165, 0)    # orange RGB
                 marker_symbol = 'd'
                 marker_size = 8
                 edge_color = (255, 140, 0)      # darkorange RGB
             else:  # waypoint
-                marker_color = (255, 255, 0)    # yellow RGB
                 marker_symbol = 'o'
                 marker_size = 6
                 edge_color = (255, 215, 0)      # gold RGB

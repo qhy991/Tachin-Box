@@ -240,7 +240,7 @@ class BoxGameCoreOptimized(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pressure_threshold = 0.001  # 降低压力阈值，从0.001改为0.0005
+        self.pressure_threshold = 0.002  # 降低压力阈值，从0.001改为0.0005
         self.sliding_threshold = 0.08 
         self.contact_area_threshold = 3  # 降低接触面积阈值，从3改为1
         self.tangential_analyzer = None
@@ -273,6 +273,12 @@ class BoxGameCoreOptimized(QObject):
         self.idle_stability_frames = 3  # 需要连续3帧稳定才判定为idle
         self.idle_stability_history = deque(maxlen=5)  # 保存最近5帧的idle状态
         self.consecutive_idle_frames = 0  # 连续idle帧数
+        
+        # 🆕 新增COP处理帧计数器 - 每3帧处理一次COP
+        self.cop_processing_interval = 2  # 每3帧处理一次COP
+        self.cop_frame_counter = 0  # COP处理帧计数器
+        self.last_processed_cop = None  # 上次处理的COP
+        self.last_processed_frame = 0  # 上次处理COP的帧号
         
         # 🎮 集成智能控制系统
         self.smart_control = SmartControlSystem()
@@ -457,7 +463,29 @@ class BoxGameCoreOptimized(QObject):
             
             contact_detected = self.detect_contact(pressure_data)
             current_cop = self.calculate_cop(pressure_data)
-            is_sliding, movement_distance = self.detect_sliding(current_cop)
+            
+            # 🆕 每3帧处理一次COP进行滑动和切向力判断
+            is_sliding = False
+            movement_distance = 0.0
+            should_process_cop = (self.analysis_frame_count % self.cop_processing_interval == 0)
+            
+            if should_process_cop:
+                # 🎯 每3帧处理一次COP
+                is_sliding, movement_distance = self.detect_sliding(current_cop)
+                self.last_processed_cop = current_cop
+                self.last_processed_frame = self.analysis_frame_count
+                print(f"🎯 COP处理 (帧 {self.analysis_frame_count}): 滑动={is_sliding}, 距离={movement_distance:.3f}")
+            else:
+                # 🔄 使用上次处理的结果
+                if self.last_processed_cop is not None:
+                    # 计算当前COP与上次处理COP的距离
+                    if current_cop is not None:
+                        dx = current_cop[0] - self.last_processed_cop[0]
+                        dy = current_cop[1] - self.last_processed_cop[1]
+                        movement_distance = np.sqrt(dx*dx + dy*dy)
+                        # 使用上次的滑动状态，但更新距离
+                        is_sliding = movement_distance > self.sliding_threshold
+                print(f"🔄 跳过COP处理 (帧 {self.analysis_frame_count}), 使用上次结果: 滑动={is_sliding}, 距离={movement_distance:.3f}")
             
             print(f"🎮 游戏核心: 基础检测完成 - 接触={contact_detected}, 滑动={is_sliding}, COP={current_cop}")
             
@@ -497,7 +525,7 @@ class BoxGameCoreOptimized(QObject):
                 idle_analysis  # 🆕 传递idle分析结果
             )
             
-            # �� 更新数据桥接器 - 传递idle分析结果
+            # 🆕 更新数据桥接器 - 传递idle分析结果
             if hasattr(self, 'data_bridge') and self.data_bridge:
                 print(f"🎮 游戏核心: 准备发送IDLE分析到数据桥接器...")
                 # 不传递分析结果，只传递COP信息
@@ -527,7 +555,9 @@ class BoxGameCoreOptimized(QObject):
                 'frame_count': self.analysis_frame_count,
                 'system_mode': 'cop_only',  # 标记为仅使用COP模式
                 'idle_analysis': idle_analysis,  # 🆕 包含idle分析结果
-                'processing_time_ms': processing_time  # 🕐 添加处理时间
+                'processing_time_ms': processing_time,  # 🕐 添加处理时间
+                'cop_processed': should_process_cop,  # 🆕 标记是否处理了COP
+                'cop_processing_interval': self.cop_processing_interval  # 🆕 COP处理间隔
             }
         except Exception as e:
             print(f"❌ 压力数据处理失败: {e}")
@@ -710,7 +740,11 @@ class BoxGameCoreOptimized(QObject):
             # 🆕 IDLE分析结果
             'idle_analysis': idle_analysis,
             # 🆕 添加帧率信息
-            'frame_rate': 1000 / FrameRateConfig.get_interval_ms("core_fps")
+            'frame_rate': 1000 / FrameRateConfig.get_interval_ms("core_fps"),
+            # 🆕 COP处理间隔信息
+            'cop_processing_interval': self.cop_processing_interval,
+            'last_processed_frame': self.last_processed_frame,
+            'cop_processing_enabled': True
         }
         self.game_state_changed.emit(state_info)
         self.analysis_frame_count += 1
@@ -781,6 +815,11 @@ class BoxGameCoreOptimized(QObject):
         self.confidence_history.clear()
         self.analysis_frame_count = 0
         
+        # 🆕 重置COP处理相关状态
+        self.cop_frame_counter = 0
+        self.last_processed_cop = None
+        self.last_processed_frame = 0
+        
         # 🎮 重置智能控制系统
         self.smart_control.reset()
         
@@ -788,7 +827,7 @@ class BoxGameCoreOptimized(QObject):
         if self.path_enhancer:
             self.path_enhancer.reset_path()
         
-        print("🔄 游戏状态已重置（含智能控制系统）")
+        print("🔄 游戏状态已重置（含智能控制系统和COP处理状态）")
 
     def update_parameters(self, params):
         """更新游戏参数"""
@@ -807,11 +846,81 @@ class BoxGameCoreOptimized(QObject):
             self.enable_idle_detection = params['enable_idle_detection']
             print(f"🔍 IDLE检测开关: {'启用' if self.enable_idle_detection else '禁用'}")
         
+        # 🆕 更新COP处理间隔
+        if 'cop_processing_interval' in params:
+            old_interval = self.cop_processing_interval
+            self.cop_processing_interval = params['cop_processing_interval']
+            print(f"🎯 COP处理间隔已调整: {old_interval} -> {self.cop_processing_interval} 帧")
+            print(f"💡 提示: 每{self.cop_processing_interval}帧处理一次COP，可以减少计算量提高性能")
+        
         # 🎮 更新智能控制系统参数
         if self.smart_control:
             self.smart_control.update_parameters(params)
 
         print(f"🎮 游戏参数已更新: {list(params.keys())}")
+
+    def set_cop_processing_interval(self, interval):
+        """设置COP处理间隔"""
+        if interval < 1:
+            print("❌ COP处理间隔不能小于1帧")
+            return False
+        
+        old_interval = self.cop_processing_interval
+        self.cop_processing_interval = interval
+        
+        print(f"🎯 COP处理间隔已设置: {old_interval} -> {interval} 帧")
+        print(f"💡 性能影响:")
+        if interval == 1:
+            print("   - 每帧处理COP，响应最快但计算量最大")
+        elif interval <= 3:
+            print("   - 处理频率较高，平衡了响应速度和性能")
+        elif interval <= 5:
+            print("   - 处理频率适中，适合大多数应用场景")
+        else:
+            print("   - 处理频率较低，性能最优但响应较慢")
+        
+        return True
+
+    def get_cop_processing_info(self):
+        """获取COP处理信息"""
+        return {
+            'interval': self.cop_processing_interval,
+            'frame_counter': self.analysis_frame_count,
+            'last_processed_frame': self.last_processed_frame,
+            'next_processing_frame': (self.last_processed_frame // self.cop_processing_interval + 1) * self.cop_processing_interval,
+            'frames_until_next': max(0, self.cop_processing_interval - (self.analysis_frame_count % self.cop_processing_interval))
+        }
+
+    def print_cop_processing_stats(self):
+        """打印COP处理统计信息"""
+        info = self.get_cop_processing_info()
+        print("\n" + "="*50)
+        print("🎯 COP处理统计信息")
+        print("="*50)
+        print(f"📊 处理间隔: {info['interval']} 帧")
+        print(f"📈 当前帧数: {info['frame_counter']}")
+        print(f"🔄 上次处理帧: {info['last_processed_frame']}")
+        print(f"⏭️ 下次处理帧: {info['next_processing_frame']}")
+        print(f"⏳ 距离下次处理: {info['frames_until_next']} 帧")
+        
+        # 计算处理效率
+        if info['frame_counter'] > 0:
+            processed_frames = info['last_processed_frame'] // info['interval']
+            efficiency = (processed_frames / info['frame_counter']) * 100
+            print(f"📊 处理效率: {efficiency:.1f}% (已处理 {processed_frames} 次，总帧数 {info['frame_counter']})")
+        
+        # 性能建议
+        print(f"\n💡 性能建议:")
+        if info['interval'] == 1:
+            print("   - 当前为每帧处理模式，响应最快但计算量最大")
+        elif info['interval'] <= 3:
+            print("   - 当前为高频处理模式，平衡了响应速度和性能")
+        elif info['interval'] <= 5:
+            print("   - 当前为中频处理模式，适合大多数应用场景")
+        else:
+            print("   - 当前为低频处理模式，性能最优但响应较慢")
+        
+        print("="*50)
 
     def set_contact_detection_thresholds(self, pressure_threshold=None, contact_area_threshold=None):
         """设置接触检测阈值 - 专门用于调整接触检测灵敏度"""
@@ -990,6 +1099,90 @@ class BoxGameCoreOptimized(QObject):
             
         except Exception as e:
             print(f"❌ 鼠标输入处理失败: {e}")
+
+    def test_cop_processing_performance(self, test_intervals=[1, 2, 3, 5, 10]):
+        """测试不同COP处理间隔的性能"""
+        print("\n" + "="*60)
+        print("🧪 COP处理间隔性能测试")
+        print("="*60)
+        
+        # 保存当前设置
+        original_interval = self.cop_processing_interval
+        original_frame_count = self.analysis_frame_count
+        
+        test_results = []
+        
+        for interval in test_intervals:
+            print(f"\n🔍 测试间隔: {interval} 帧")
+            
+            # 设置测试间隔
+            self.cop_processing_interval = interval
+            self.analysis_frame_count = 0
+            self.last_processed_frame = 0
+            
+            # 模拟处理一些帧
+            test_frames = 30  # 测试30帧
+            processing_times = []
+            
+            for frame in range(test_frames):
+                start_time = time.time()
+                
+                # 模拟压力数据
+                test_pressure = np.random.random((32, 32)) * 0.01
+                
+                # 处理数据
+                self.process_pressure_data(test_pressure)
+                
+                processing_time = (time.time() - start_time) * 1000
+                processing_times.append(processing_time)
+            
+            # 计算统计信息
+            avg_time = np.mean(processing_times)
+            max_time = np.max(processing_times)
+            min_time = np.min(processing_times)
+            
+            # 计算处理次数
+            processed_count = test_frames // interval
+            efficiency = (processed_count / test_frames) * 100
+            
+            test_results.append({
+                'interval': interval,
+                'avg_time': avg_time,
+                'max_time': max_time,
+                'min_time': min_time,
+                'processed_count': processed_count,
+                'efficiency': efficiency
+            })
+            
+            print(f"  平均处理时间: {avg_time:.2f}ms")
+            print(f"  最大处理时间: {max_time:.2f}ms")
+            print(f"  最小处理时间: {min_time:.2f}ms")
+            print(f"  COP处理次数: {processed_count}/{test_frames}")
+            print(f"  处理效率: {efficiency:.1f}%")
+        
+        # 恢复原始设置
+        self.cop_processing_interval = original_interval
+        self.analysis_frame_count = original_frame_count
+        
+        # 输出测试结果汇总
+        print("\n" + "="*60)
+        print("📊 性能测试结果汇总")
+        print("="*60)
+        print("间隔\t平均时间\t最大时间\t处理次数\t效率")
+        print("-" * 60)
+        
+        for result in test_results:
+            print(f"{result['interval']}\t{result['avg_time']:.2f}ms\t{result['max_time']:.2f}ms\t{result['processed_count']}\t{result['efficiency']:.1f}%")
+        
+        # 找出最佳性能
+        best_result = min(test_results, key=lambda x: x['avg_time'])
+        print(f"\n🏆 最佳性能: {best_result['interval']}帧间隔")
+        print(f"   平均处理时间: {best_result['avg_time']:.2f}ms")
+        print(f"   处理效率: {best_result['efficiency']:.1f}%")
+        
+        print("="*60)
+        
+        return test_results
 
 
 class BoxGameMainWindow(QMainWindow):
@@ -1185,12 +1378,18 @@ class BoxGameMainWindow(QMainWindow):
         print("  - 渲染时间 (图像更新)")
         print("  - 物理更新时间 (游戏逻辑)")
         print("  - 总处理时间")
+        print("\n🎯 COP处理优化:")
+        print(f"  - 每{self.game_core.cop_processing_interval}帧处理一次COP")
+        print("  - 减少滑动和切向力判断的计算量")
+        print("  - 提高整体性能")
         print("\n⌨️ 快捷键:")
         print("  P - 显示性能汇总")
         print("  R - 重置性能统计")
         print("  F - 显示帧率配置")
         print("  G - 强制刷新渲染器")
         print("  T - 测试渲染器性能")
+        print("  C - 显示COP处理统计")
+        print("  V - 运行COP性能测试")
         print("  H - 显示帮助信息")
         print("="*50)
         
@@ -1564,6 +1763,10 @@ class BoxGameMainWindow(QMainWindow):
                         # 🆕 启用引导模式，允许切换到2D
                         self.renderer.set_guide_mode(True)
                         print("🎨 引导模式已启用，可以切换到2D渲染")
+                        
+                        # 🆕 强制触发游戏状态变化，确保路径可视化被渲染
+                        self.renderer.game_state_changed = True
+                        print("🎨 强制触发游戏状态变化，确保路径连线显示")
                 else:
                     print(f"❌ 路径模式启用失败: {path_name}")
             else:
@@ -1575,6 +1778,10 @@ class BoxGameMainWindow(QMainWindow):
                     # 🆕 禁用引导模式，保持当前渲染模式
                     self.renderer.set_guide_mode(False)
                     print("🎨 引导模式已禁用，保持当前渲染模式")
+                    
+                    # 🆕 强制触发游戏状态变化，确保路径可视化被清除
+                    self.renderer.game_state_changed = True
+                    print("🎨 强制触发游戏状态变化，确保路径连线清除")
         except Exception as e:
             print(f"❌ 路径模式操作失败: {str(e)}")
     
@@ -1584,6 +1791,11 @@ class BoxGameMainWindow(QMainWindow):
         try:
             self.game_core.reset_path_progress()
             print("🗺️ 路径进度已重置")
+            
+            # 🆕 强制触发游戏状态变化，确保路径可视化被更新
+            if self.renderer:
+                self.renderer.game_state_changed = True
+                print("🎨 强制触发游戏状态变化，确保路径进度更新")
         except Exception as e:
             print(f"❌ 路径重置失败: {str(e)}")
     
@@ -1622,6 +1834,20 @@ class BoxGameMainWindow(QMainWindow):
                     self.renderer.test_renderer_performance()
                 else:
                     print("❌ 渲染器不可用")
+            # 按 'C' 键显示COP处理统计
+            elif event.key() == Qt.Key_C:
+                print("\n🎯 显示COP处理统计...")
+                if self.game_core:
+                    self.game_core.print_cop_processing_stats()
+                else:
+                    print("❌ 游戏核心不可用")
+            # 按 'V' 键运行COP性能测试
+            elif event.key() == Qt.Key_V:
+                print("\n🧪 运行COP性能测试...")
+                if self.game_core:
+                    self.game_core.test_cop_processing_performance()
+                else:
+                    print("❌ 游戏核心不可用")
             # 按 'H' 键显示帮助信息
             elif event.key() == Qt.Key_H:
                 print("\n" + "="*50)
@@ -1632,6 +1858,8 @@ class BoxGameMainWindow(QMainWindow):
                 print("F - 显示帧率配置")
                 print("G - 强制刷新渲染器")
                 print("T - 测试渲染器性能")
+                print("C - 显示COP处理统计")
+                print("V - 运行COP性能测试")
                 print("H - 显示帮助信息")
                 print("="*50)
             else:

@@ -11,11 +11,11 @@ __author__ = "BoxGame Team"
 from .box_game_renderer import BoxGameRenderer
 from .box_game_control_panel import BoxGameControlPanel
 from .box_game_path_planning import PathPlanningGameEnhancer
-from .path_visualization_manager import PathVisualizationManager
+from .path_visualization_manager_optimized import PathVisualizationManagerOptimized
 
 __all__ = [
     'BoxGameRenderer', 
     'BoxGameControlPanel',
     'PathPlanningGameEnhancer',
-    'PathVisualizationManager'
+    'PathVisualizationManagerOptimized'
 ] 

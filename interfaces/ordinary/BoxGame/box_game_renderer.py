@@ -58,9 +58,9 @@ from pyqtgraph.opengl import GLViewWidget, GLSurfacePlotItem, GLGridItem, GLLine
 from pyqtgraph import GraphicsLayoutWidget, PlotWidget
 
 try:
-    from .path_visualization_manager import PathVisualizationManager
+    from .path_visualization_manager_optimized import PathVisualizationManagerOptimized
 except ImportError:
-    from path_visualization_manager import PathVisualizationManager
+    from path_visualization_manager_optimized import PathVisualizationManagerOptimized
 
 # 🆕 导入帧级性能分析器
 try:
@@ -240,10 +240,16 @@ class BoxGameRenderer(QWidget):
         self.setup_layout()
         
         # 🗺️ 初始化路径可视化管理器
-        try:
-            self.path_manager = PathVisualizationManager(self.game_plot_widget)
-        except Exception as e:
-            print(f"⚠️ 路径可视化管理器初始化失败: {e}")
+        if PATH_PLANNING_AVAILABLE:
+            try:
+                from path_visualization_manager import PathVisualizationManager
+                self.path_manager = PathVisualizationManager(self.game_plot_widget)
+                print("✅ 路径可视化管理器初始化成功")
+            except ImportError as e:
+                print(f"⚠️ 无法导入路径可视化管理器: {e}")
+                self.path_manager = None
+        else:
+            print("⚠️ 路径规划模块不可用，跳过路径可视化管理器初始化")
             self.path_manager = None
         
         # 🖱️ 鼠标事件 - 在布局设置后立即设置
@@ -1209,6 +1215,45 @@ class BoxGameRenderer(QWidget):
             # 更新模式
             self.performance_mode = mode
             
+            # 🗺️ 更新路径可视化管理器的性能选项
+            if self.path_manager and hasattr(self.path_manager, 'set_performance_options'):
+                # 根据性能模式设置不同的选项
+                if mode == "低性能":
+                    path_options = {
+                        'max_points_to_render': 20,
+                        'point_render_interval': 3,
+                        'enable_debug_output': False,
+                        'animation_enabled': False,
+                        'show_pending_lines': False  # 禁用中间连接线
+                    }
+                elif mode == "标准":
+                    path_options = {
+                        'max_points_to_render': 35,
+                        'point_render_interval': 2,
+                        'enable_debug_output': False,
+                        'animation_enabled': True,
+                        'show_pending_lines': False  # 禁用中间连接线
+                    }
+                elif mode == "高性能":
+                    path_options = {
+                        'max_points_to_render': 50,
+                        'point_render_interval': 2,
+                        'enable_debug_output': False,
+                        'animation_enabled': True,
+                        'show_pending_lines': False  # 禁用中间连接线
+                    }
+                else:  # 极限模式
+                    path_options = {
+                        'max_points_to_render': 100,
+                        'point_render_interval': 1,
+                        'enable_debug_output': True,
+                        'animation_enabled': True,
+                        'show_pending_lines': True   # 极限模式显示所有线条
+                    }
+                
+                self.path_manager.set_performance_options(path_options)
+                print(f"🗺️ 路径可视化管理器性能选项已更新: {mode}模式")
+            
             # 如果模式发生变化，强制重新创建3D表面并提示用户
             if previous_mode != mode:
                 self._pressure_data_changed = True
@@ -1216,7 +1261,7 @@ class BoxGameRenderer(QWidget):
                 print(f"💡 提示：颜色和网格效果可能会发生变化")
                 print(f"💡 建议：如需稳定效果，请在控制面板中手动选择性能模式")
             
-            print(f"�� 渲染器性能模式已设置为: {mode}")
+            print(f"🎨 渲染器性能模式已设置为: {mode}")
             self.update_frame_rate()
         else:
             print(f"❌ 无效的性能模式: {mode}")
@@ -1819,6 +1864,10 @@ class BoxGameRenderer(QWidget):
         # 重置路径可视化
         if self.path_manager:
             self.path_manager.clear_path_visualization()
+            # 🗺️ 强制重绘路径可视化
+            if hasattr(self.path_manager, 'force_redraw'):
+                self.path_manager.force_redraw()
+                print("🗺️ 路径可视化已强制重绘")
         
         # 🎨 重置3D视角到固定45度
         self.reset_3d_view_to_fixed_45()
@@ -1905,6 +1954,11 @@ class BoxGameRenderer(QWidget):
             self.mouse_protection_timer.stop()
             print("🖱️ 鼠标交互保护定时器已停止")
         
+        # 🗺️ 清理路径可视化管理器
+        if self.path_manager and hasattr(self.path_manager, 'cleanup'):
+            self.path_manager.cleanup()
+            print("🗺️ 路径可视化管理器已清理")
+        
         print("⏹️ 渲染循环已停止")
     
     def update_frame_rate(self):
@@ -1936,11 +1990,20 @@ class BoxGameRenderer(QWidget):
     
     def get_performance_stats(self):
         """获取性能统计"""
-        return {
+        stats = {
             'current_fps': self.current_fps,
             'target_fps': 1000 / self.update_timer.interval(),
             'frame_count': self.frame_count
         }
+        
+        # 🗺️ 添加路径可视化管理器的性能统计
+        if self.path_manager and hasattr(self.path_manager, 'get_performance_stats'):
+            path_stats = self.path_manager.get_performance_stats()
+            if path_stats:
+                stats['path_visualization'] = path_stats
+                print(f"🗺️ 路径可视化性能统计: {path_stats}")
+        
+        return stats
 
     # 🎨 数据预处理方法 - 参考user_interface.py
     def gaussian_blur(self, data, sigma=1.0):

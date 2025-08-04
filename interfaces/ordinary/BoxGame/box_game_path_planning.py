@@ -18,7 +18,8 @@ import matplotlib.patches as patches
 class PathPoint:
     """路径点类"""
     
-    def __init__(self, x: float, y: float, point_type: str = "waypoint", radius: float = 3.0, connection_type: str = "solid"):
+    def __init__(self, x: float, y: float, point_type: str = "waypoint", radius: float = 3.0, 
+                 connection_type: str = "solid", point_color: str = "default", line_color: str = "default"):
         self.x = x
         self.y = y
         self.point_type = point_type  # "start", "waypoint", "target", "checkpoint"
@@ -26,6 +27,8 @@ class PathPoint:
         self.reached = False
         self.reach_time = None
         self.connection_type = connection_type  # "solid", "dashed", "none"
+        self.point_color = point_color  # 点的颜色
+        self.line_color = line_color    # 线条的颜色
         
     def distance_to(self, other_x: float, other_y: float) -> float:
         """计算到指定坐标的距离"""
@@ -44,13 +47,21 @@ class PathPoint:
             'radius': self.radius,
             'reached': self.reached,
             'reach_time': self.reach_time,
-            'connection_type': self.connection_type
+            'connection_type': self.connection_type,
+            'point_color': self.point_color,
+            'line_color': self.line_color
         }
     
     @classmethod
     def from_dict(cls, data: Dict):
         """从字典创建路径点"""
-        point = cls(data['x'], data['y'], data['type'], data.get('radius', 3.0), data.get('connection_type', 'solid'))
+        point = cls(
+            data['x'], data['y'], data['type'], 
+            data.get('radius', 3.0), 
+            data.get('connection_type', 'solid'),
+            data.get('point_color', 'default'),
+            data.get('line_color', 'default')
+        )
         point.reached = data.get('reached', False)
         point.reach_time = data.get('reach_time', None)
         return point
@@ -68,9 +79,12 @@ class GamePath:
         self.is_completed = False
         self.start_time = None
         
-    def add_point(self, x: float, y: float, point_type: str = "waypoint", connection_type: str = "solid") -> PathPoint:
+    def add_point(self, x: float, y: float, point_type: str = "waypoint", 
+                  connection_type: str = "solid", point_color: str = "default", 
+                  line_color: str = "default") -> PathPoint:
         """添加路径点"""
-        point = PathPoint(x, y, point_type, connection_type=connection_type)
+        point = PathPoint(x, y, point_type, connection_type=connection_type, 
+                         point_color=point_color, line_color=line_color)
         self.points.append(point)
         return point
     
@@ -230,17 +244,33 @@ class PathPlanner:
         precision_path.add_point(32, 32, "target")
         self.available_paths["精确挑战"] = precision_path
         
-        # 🤖 AI字母路径 - 优化版本，只连接关键点
+        # 🤖 AI字母路径 - 完全重新设计，确保字母独立且清晰
         ai_path = GamePath("AI字母")
-        # A字母 - 只连接关键点
-        ai_path.add_point(15, 10, "start")  # A的左底部
-        ai_path.add_point(20, 20, "waypoint")  # A的顶部
-        ai_path.add_point(25, 10, "waypoint")  # A的右底部
-        ai_path.add_point(20, 15, "waypoint")  # A的横线中点
-        # I字母 - 只连接关键点
-        ai_path.add_point(30, 10, "waypoint")  # I的底部
-        ai_path.add_point(30, 20, "waypoint")  # I的顶部
-        ai_path.add_point(30, 10, "target")  # 回到I的底部
+        
+        # 基于TACHIN字母的设计理念，每个字母完全独立绘制
+        # 字母宽度8单位，高度40单位，字母间距4单位，确保在64x64范围内
+        # 考虑y轴反向，顶部y值较小，底部y值较大
+        
+        # A字母 - 完全独立的三角形+横线设计（蓝色）
+        ai_path.add_point(10, 52, "start", "solid", "blue", "blue")  # A的左底部
+        ai_path.add_point(18, 12, "waypoint", "solid", "blue", "blue")  # A的顶部
+        ai_path.add_point(26, 52, "waypoint", "solid", "blue", "blue")  # A的右底部
+        ai_path.add_point(22, 32, "waypoint", "solid", "blue", "blue")  # A的横线右端
+        ai_path.add_point(14, 32, "waypoint", "solid", "blue", "blue")  # A的横线左端
+        ai_path.add_point(18, 12, "target", "solid", "blue", "blue")  # 回到A的顶部
+        
+        # 断开连接 - 使用不同的坐标避免连接
+        ai_path.add_point(32, 32, "waypoint", "none", "gray", "gray")  # 断开点，使用中心坐标
+        
+        # I字母 - 完全独立的顶部横线+竖线+底部横线设计（绿色）
+        ai_path.add_point(36, 52, "waypoint", "solid", "green", "green")  # I的底部左端
+        ai_path.add_point(44, 52, "waypoint", "solid", "green", "green")  # I的底部右端
+        ai_path.add_point(40, 52, "waypoint", "solid", "green", "green")  # I的底部中点
+        ai_path.add_point(40, 12, "waypoint", "solid", "green", "green")  # I的顶部中点
+        ai_path.add_point(36, 12, "waypoint", "solid", "green", "green")  # I的顶部左端
+        ai_path.add_point(44, 12, "waypoint", "solid", "green", "green")  # I的顶部右端
+        ai_path.add_point(40, 12, "target", "solid", "green", "green")  # 回到I的顶部中点
+        
         self.available_paths["AI字母"] = ai_path
         
         # 🎯 TACHIN字母路径 - 基于simple_test.py参考，简洁清晰的独立字母设计
@@ -249,194 +279,275 @@ class PathPlanner:
         # 基于simple_test.py的坐标设计，每个字母独立绘制
         # 字母宽度6单位，高度40单位，字母间距2单位，确保在64x64范围内
         
-        # T字母 - 横线+竖线
-        tachin_path.add_point(2, 12, "start", "solid")  # T的顶部左端
-        tachin_path.add_point(8, 12, "waypoint", "solid")  # T的顶部右端
-        tachin_path.add_point(5, 12, "waypoint", "solid")  # 回到中点
-        tachin_path.add_point(5, 52, "waypoint", "solid")  # T的底部
+        # T字母 - 横线+竖线（红色）
+        tachin_path.add_point(2, 12, "start", "solid", "red", "red")  # T的顶部左端
+        tachin_path.add_point(8, 12, "waypoint", "solid", "red", "red")  # T的顶部右端
+        tachin_path.add_point(5, 12, "waypoint", "solid", "red", "red")  # 回到中点
+        tachin_path.add_point(5, 52, "waypoint", "solid", "red", "red")  # T的底部
         
-        # 断开连接 - 不连接到A字母
-        tachin_path.add_point(12, 52, "waypoint", "none")  # 断开点
+        # 断开连接 - 使用不同的坐标避免连接
+        tachin_path.add_point(10, 32, "waypoint", "none", "gray", "gray")  # 断开点，使用中间坐标
         
-        # A字母 - 两条斜线+横线
-        tachin_path.add_point(12, 52, "waypoint", "solid")  # A的左底部
-        tachin_path.add_point(15, 12, "waypoint", "solid")  # A的顶部
-        tachin_path.add_point(18, 52, "waypoint", "solid")  # A的右底部
-        tachin_path.add_point(16, 32, "waypoint", "solid")  # A的横线右端
-        tachin_path.add_point(14, 32, "waypoint", "solid")  # A的横线左端
+        # A字母 - 两条斜线+横线（蓝色）
+        tachin_path.add_point(12, 52, "waypoint", "solid", "blue", "blue")  # A的左底部
+        tachin_path.add_point(15, 12, "waypoint", "solid", "blue", "blue")  # A的顶部
+        tachin_path.add_point(18, 52, "waypoint", "solid", "blue", "blue")  # A的右底部
+        tachin_path.add_point(16, 32, "waypoint", "solid", "blue", "blue")  # A的横线右端
+        tachin_path.add_point(14, 32, "waypoint", "solid", "blue", "blue")  # A的横线左端
         
-        # 断开连接 - 不连接到C字母
-        tachin_path.add_point(24, 17, "waypoint", "none")  # 断开点
+        # 断开连接 - 使用不同的坐标避免连接
+        tachin_path.add_point(22, 32, "waypoint", "none", "gray", "gray")  # 断开点，使用中间坐标
         
-        # C字母 - 五点曲线
-        tachin_path.add_point(24, 17, "waypoint", "solid")  # C的右端
-        tachin_path.add_point(20, 12, "waypoint", "solid")  # C的顶部
-        tachin_path.add_point(18, 32, "waypoint", "solid")  # C的左端
-        tachin_path.add_point(20, 52, "waypoint", "solid")  # C的底部
-        tachin_path.add_point(24, 47, "waypoint", "solid")  # C的右端底部
+        # C字母 - 五点曲线（绿色）
+        tachin_path.add_point(24, 17, "waypoint", "solid", "green", "green")  # C的右端
+        tachin_path.add_point(20, 12, "waypoint", "solid", "green", "green")  # C的顶部
+        tachin_path.add_point(18, 32, "waypoint", "solid", "green", "green")  # C的左端
+        tachin_path.add_point(20, 52, "waypoint", "solid", "green", "green")  # C的底部
+        tachin_path.add_point(24, 47, "waypoint", "solid", "green", "green")  # C的右端底部
         
-        # 断开连接 - 不连接到H字母
-        tachin_path.add_point(30, 12, "waypoint", "none")  # 断开点
+        # 断开连接 - 使用不同的坐标避免连接
+        tachin_path.add_point(28, 32, "waypoint", "none", "gray", "gray")  # 断开点，使用中间坐标
         
-        # H字母 - 左竖线+横线+右竖线
-        tachin_path.add_point(30, 12, "waypoint", "solid")  # H的左顶部
-        tachin_path.add_point(30, 52, "waypoint", "solid")  # H的左底部
-        tachin_path.add_point(30, 32, "waypoint", "solid")  # H的左中部
-        tachin_path.add_point(36, 32, "waypoint", "solid")  # H的横线右端
-        tachin_path.add_point(36, 12, "waypoint", "solid")  # H的右顶部
-        tachin_path.add_point(36, 52, "waypoint", "solid")  # H的右底部
+        # H字母 - 左竖线+横线+右竖线（紫色）
+        tachin_path.add_point(30, 12, "waypoint", "solid", "purple", "purple")  # H的左顶部
+        tachin_path.add_point(30, 52, "waypoint", "solid", "purple", "purple")  # H的左底部
+        tachin_path.add_point(30, 32, "waypoint", "solid", "purple", "purple")  # H的左中部
+        tachin_path.add_point(36, 32, "waypoint", "solid", "purple", "purple")  # H的横线右端
+        tachin_path.add_point(36, 12, "waypoint", "solid", "purple", "purple")  # H的右顶部
+        tachin_path.add_point(36, 52, "waypoint", "solid", "purple", "purple")  # H的右底部
         
-        # 断开连接 - 不连接到I字母
-        tachin_path.add_point(42, 12, "waypoint", "none")  # 断开点
+        # 断开连接 - 使用不同的坐标避免连接
+        tachin_path.add_point(40, 32, "waypoint", "none", "gray", "gray")  # 断开点，使用中间坐标
         
-        # I字母 - 顶部横线+竖线+底部横线
-        tachin_path.add_point(42, 12, "waypoint", "solid")  # I的顶部左端
-        tachin_path.add_point(46, 12, "waypoint", "solid")  # I的顶部右端
-        tachin_path.add_point(44, 12, "waypoint", "solid")  # I的顶部中点
-        tachin_path.add_point(44, 52, "waypoint", "solid")  # I的底部中点
-        tachin_path.add_point(42, 52, "waypoint", "solid")  # I的底部左端
-        tachin_path.add_point(46, 52, "waypoint", "solid")  # I的底部右端
+        # I字母 - 顶部横线+竖线+底部横线（橙色）
+        tachin_path.add_point(42, 12, "waypoint", "solid", "orange", "orange")  # I的顶部左端
+        tachin_path.add_point(46, 12, "waypoint", "solid", "orange", "orange")  # I的顶部右端
+        tachin_path.add_point(44, 12, "waypoint", "solid", "orange", "orange")  # I的顶部中点
+        tachin_path.add_point(44, 52, "waypoint", "solid", "orange", "orange")  # I的底部中点
+        tachin_path.add_point(42, 52, "waypoint", "solid", "orange", "orange")  # I的底部左端
+        tachin_path.add_point(46, 52, "waypoint", "solid", "orange", "orange")  # I的底部右端
         
-        # 断开连接 - 不连接到N字母
-        tachin_path.add_point(52, 52, "waypoint", "none")  # 断开点
+        # 断开连接 - 使用不同的坐标避免连接
+        tachin_path.add_point(50, 32, "waypoint", "none", "gray", "gray")  # 断开点，使用中间坐标
         
-        # N字母 - 左竖线+对角线+右竖线
-        tachin_path.add_point(52, 52, "waypoint", "solid")  # N的左底部
-        tachin_path.add_point(52, 12, "waypoint", "solid")  # N的左顶部
-        tachin_path.add_point(58, 52, "waypoint", "solid")  # N的对角线底部
-        tachin_path.add_point(58, 12, "target", "solid")  # N的右顶部
+        # N字母 - 左竖线+对角线+右竖线（棕色）
+        tachin_path.add_point(52, 52, "waypoint", "solid", "brown", "brown")  # N的左底部
+        tachin_path.add_point(52, 12, "waypoint", "solid", "brown", "brown")  # N的左顶部
+        tachin_path.add_point(58, 52, "waypoint", "solid", "brown", "brown")  # N的对角线底部
+        tachin_path.add_point(58, 12, "target", "solid", "brown", "brown")  # N的右顶部
         
         self.available_paths["TACHIN字母"] = tachin_path
         
-        # 😊 笑脸表情路径 - 考虑Y轴向下，放大版本，去掉装饰点
+        # 😊 笑脸表情路径 - 完全重新设计，眼睛也作为绘制路径
         smile_path = GamePath("😊 笑脸")
-        # 外圆 - 主要路径（实线），放大
+        
+        # 基于TACHIN字母的设计理念，简洁清晰的路径设计
+        # 考虑y轴反向，顶部y值较小，底部y值较大
+        # 外圆 - 主要路径（蓝色），在64x64范围内合理布局
         center_x, center_y = 32, 32
-        radius = 16  # 增大半径
-        # 只取8个关键点形成圆形
+        radius = 16  # 增大半径，让表情更清晰
+        
+        # 外圆路径 - 8个关键点形成圆形（蓝色）
         for i in range(8):
             angle = i * 2 * np.pi / 8
             x = center_x + radius * np.cos(angle)
             y = center_y + radius * np.sin(angle)
             point_type = "start" if i == 0 else ("waypoint" if i < 7 else "target")
-            smile_path.add_point(x, y, point_type, "solid")
+            smile_path.add_point(x, y, point_type, "solid", "blue", "blue")
         
-        # 左眼 - 简单的点（考虑Y轴向下）
-        smile_path.add_point(24, 24, "waypoint", "none")
+        # 断开连接 - 外圆到左眼
+        smile_path.add_point(20, 20, "waypoint", "none", "gray", "gray")  # 断开点
         
-        # 右眼 - 简单的点（考虑Y轴向下）
-        smile_path.add_point(40, 24, "waypoint", "none")
+        # 左眼 - 作为绘制路径（小圆形，黑色）
+        smile_path.add_point(24, 24, "waypoint", "solid", "black", "black")  # 左眼中心
+        smile_path.add_point(22, 24, "waypoint", "solid", "black", "black")  # 左眼左端
+        smile_path.add_point(24, 22, "waypoint", "solid", "black", "black")  # 左眼上端
+        smile_path.add_point(26, 24, "waypoint", "solid", "black", "black")  # 左眼右端
+        smile_path.add_point(24, 26, "waypoint", "solid", "black", "black")  # 左眼下端
+        smile_path.add_point(24, 24, "waypoint", "solid", "black", "black")  # 回到左眼中心
         
-        # 嘴巴（弧形）- 简单的弧线（考虑Y轴向下，嘴巴向上）
-        smile_path.add_point(24, 40, "waypoint", "solid")  # 左嘴角
-        smile_path.add_point(32, 42, "waypoint", "solid")  # 嘴巴中点
-        smile_path.add_point(40, 40, "waypoint", "solid")  # 右嘴角
+        # 断开连接 - 左眼到右眼
+        smile_path.add_point(36, 20, "waypoint", "none", "gray", "gray")  # 断开点
         
-        smile_path.add_point(32, 32, "target", "solid")  # 回到中心
+        # 右眼 - 作为绘制路径（小圆形，黑色）
+        smile_path.add_point(40, 24, "waypoint", "solid", "black", "black")  # 右眼中心
+        smile_path.add_point(38, 24, "waypoint", "solid", "black", "black")  # 右眼左端
+        smile_path.add_point(40, 22, "waypoint", "solid", "black", "black")  # 右眼上端
+        smile_path.add_point(42, 24, "waypoint", "solid", "black", "black")  # 右眼右端
+        smile_path.add_point(40, 26, "waypoint", "solid", "black", "black")  # 右眼下端
+        smile_path.add_point(40, 24, "waypoint", "solid", "black", "black")  # 回到右眼中心
+        
+        # 断开连接 - 右眼到嘴巴
+        smile_path.add_point(28, 30, "waypoint", "none", "gray", "gray")  # 断开点
+        
+        # 嘴巴（弧形）- 更自然的微笑弧线（红色）
+        smile_path.add_point(24, 36, "waypoint", "solid", "red", "red")  # 左嘴角
+        smile_path.add_point(28, 38, "waypoint", "solid", "red", "red")  # 左弧点
+        smile_path.add_point(32, 40, "waypoint", "solid", "red", "red")  # 嘴巴中点
+        smile_path.add_point(36, 38, "waypoint", "solid", "red", "red")  # 右弧点
+        smile_path.add_point(40, 36, "waypoint", "solid", "red", "red")  # 右嘴角
+        
+        smile_path.add_point(32, 32, "target", "solid", "blue", "blue")  # 回到中心
         self.available_paths["😊 笑脸"] = smile_path
         
-        # 😢 哭脸表情路径 - 考虑Y轴向下，放大版本，去掉装饰点
+        # 😢 哭脸表情路径 - 完全重新设计，眼睛和眼泪也作为绘制路径
         cry_path = GamePath("😢 哭脸")
-        # 外圆 - 主要路径（实线），放大
+        
+        # 外圆 - 主要路径（蓝色），与笑脸相同的基础圆形
         for i in range(8):
             angle = i * 2 * np.pi / 8
             x = center_x + radius * np.cos(angle)
             y = center_y + radius * np.sin(angle)
             point_type = "start" if i == 0 else ("waypoint" if i < 7 else "target")
-            cry_path.add_point(x, y, point_type, "solid")
+            cry_path.add_point(x, y, point_type, "solid", "blue", "blue")
         
-        # 左眼 - 简单的点（考虑Y轴向下）
-        cry_path.add_point(24, 24, "waypoint", "none")
+        # 断开连接 - 外圆到左眼
+        cry_path.add_point(20, 20, "waypoint", "none", "gray", "gray")  # 断开点
         
-        # 右眼 - 简单的点（考虑Y轴向下）
-        cry_path.add_point(40, 24, "waypoint", "none")
+        # 左眼 - 作为绘制路径（小圆形，黑色）
+        cry_path.add_point(24, 24, "waypoint", "solid", "black", "black")  # 左眼中心
+        cry_path.add_point(22, 24, "waypoint", "solid", "black", "black")  # 左眼左端
+        cry_path.add_point(24, 22, "waypoint", "solid", "black", "black")  # 左眼上端
+        cry_path.add_point(26, 24, "waypoint", "solid", "black", "black")  # 左眼右端
+        cry_path.add_point(24, 26, "waypoint", "solid", "black", "black")  # 左眼下端
+        cry_path.add_point(24, 24, "waypoint", "solid", "black", "black")  # 回到左眼中心
         
-        # 眼泪（左）- 简单的线（考虑Y轴向下，眼泪向下）
-        cry_path.add_point(24, 36, "waypoint", "solid")
-        cry_path.add_point(24, 44, "waypoint", "solid")
+        # 断开连接 - 左眼到左眼泪
+        cry_path.add_point(20, 26, "waypoint", "none", "gray", "gray")  # 断开点
         
-        # 眼泪（右）- 简单的线（考虑Y轴向下，眼泪向下）
-        cry_path.add_point(40, 36, "waypoint", "solid")
-        cry_path.add_point(40, 44, "waypoint", "solid")
+        # 眼泪（左）- 作为绘制路径（蓝色）
+        cry_path.add_point(24, 28, "waypoint", "solid", "blue", "blue")  # 左眼泪起点
+        cry_path.add_point(24, 32, "waypoint", "solid", "blue", "blue")  # 左眼泪中点
+        cry_path.add_point(24, 36, "waypoint", "solid", "blue", "blue")  # 左眼泪终点
         
-        # 嘴巴（倒弧形）- 简单的弧线（考虑Y轴向下，嘴巴向下）
-        cry_path.add_point(24, 40, "waypoint", "solid")  # 左嘴角
-        cry_path.add_point(32, 44, "waypoint", "solid")  # 嘴巴中点
-        cry_path.add_point(40, 40, "waypoint", "solid")  # 右嘴角
+        # 断开连接 - 左眼泪到右眼
+        cry_path.add_point(36, 20, "waypoint", "none", "gray", "gray")  # 断开点
         
-        cry_path.add_point(32, 32, "target", "solid")  # 回到中心
+        # 右眼 - 作为绘制路径（小圆形，黑色）
+        cry_path.add_point(40, 24, "waypoint", "solid", "black", "black")  # 右眼中心
+        cry_path.add_point(38, 24, "waypoint", "solid", "black", "black")  # 右眼左端
+        cry_path.add_point(40, 22, "waypoint", "solid", "black", "black")  # 右眼上端
+        cry_path.add_point(42, 24, "waypoint", "solid", "black", "black")  # 右眼右端
+        cry_path.add_point(40, 26, "waypoint", "solid", "black", "black")  # 右眼下端
+        cry_path.add_point(40, 24, "waypoint", "solid", "black", "black")  # 回到右眼中心
+        
+        # 断开连接 - 右眼到右眼泪
+        cry_path.add_point(44, 26, "waypoint", "none", "gray", "gray")  # 断开点
+        
+        # 眼泪（右）- 作为绘制路径（蓝色）
+        cry_path.add_point(40, 28, "waypoint", "solid", "blue", "blue")  # 右眼泪起点
+        cry_path.add_point(40, 32, "waypoint", "solid", "blue", "blue")  # 右眼泪中点
+        cry_path.add_point(40, 36, "waypoint", "solid", "blue", "blue")  # 右眼泪终点
+        
+        # 断开连接 - 右眼泪到嘴巴
+        cry_path.add_point(28, 30, "waypoint", "none", "gray", "gray")  # 断开点
+        
+        # 嘴巴（倒弧形）- 更自然的哭泣弧线（红色）
+        cry_path.add_point(24, 36, "waypoint", "solid", "red", "red")  # 左嘴角
+        cry_path.add_point(28, 38, "waypoint", "solid", "red", "red")  # 左弧点
+        cry_path.add_point(32, 40, "waypoint", "solid", "red", "red")  # 嘴巴中点
+        cry_path.add_point(36, 38, "waypoint", "solid", "red", "red")  # 右弧点
+        cry_path.add_point(40, 36, "waypoint", "solid", "red", "red")  # 右嘴角
+        
+        cry_path.add_point(32, 32, "target", "solid", "blue", "blue")  # 回到中心
         self.available_paths["😢 哭脸"] = cry_path
         
-        # 😎 酷脸表情路径 - 考虑Y轴向下，放大版本，去掉装饰点
+        # 😎 酷脸表情路径 - 完全重新设计，眼睛和墨镜也作为绘制路径
         cool_path = GamePath("😎 酷脸")
-        # 外圆 - 主要路径（实线），放大
+        
+        # 外圆 - 主要路径（蓝色），与笑脸相同的基础圆形
         for i in range(8):
             angle = i * 2 * np.pi / 8
             x = center_x + radius * np.cos(angle)
             y = center_y + radius * np.sin(angle)
             point_type = "start" if i == 0 else ("waypoint" if i < 7 else "target")
-            cool_path.add_point(x, y, point_type, "solid")
+            cool_path.add_point(x, y, point_type, "solid", "blue", "blue")
         
-        # 左眼 - 简单的点（考虑Y轴向下）
-        cool_path.add_point(24, 24, "waypoint", "none")
+        # 断开连接 - 外圆到左眼
+        cool_path.add_point(20, 20, "waypoint", "none", "gray", "gray")  # 断开点
         
-        # 右眼 - 简单的点（考虑Y轴向下）
-        cool_path.add_point(40, 24, "waypoint", "none")
+        # 左眼 - 作为绘制路径（小圆形，黑色）
+        cool_path.add_point(24, 24, "waypoint", "solid", "black", "black")  # 左眼中心
+        cool_path.add_point(22, 24, "waypoint", "solid", "black", "black")  # 左眼左端
+        cool_path.add_point(24, 22, "waypoint", "solid", "black", "black")  # 左眼上端
+        cool_path.add_point(26, 24, "waypoint", "solid", "black", "black")  # 左眼右端
+        cool_path.add_point(24, 26, "waypoint", "solid", "black", "black")  # 左眼下端
+        cool_path.add_point(24, 24, "waypoint", "solid", "black", "black")  # 回到左眼中心
         
-        # 墨镜（弧形）- 简单的线（考虑Y轴向下）
-        cool_path.add_point(24, 28, "waypoint", "solid")  # 左墨镜
-        cool_path.add_point(32, 30, "waypoint", "solid")  # 墨镜中点
-        cool_path.add_point(40, 28, "waypoint", "solid")  # 右墨镜
+        # 断开连接 - 左眼到右眼
+        cool_path.add_point(36, 20, "waypoint", "none", "gray", "gray")  # 断开点
         
-        # 嘴巴（直线）- 简单的线（考虑Y轴向下）
-        cool_path.add_point(24, 40, "waypoint", "solid")
-        cool_path.add_point(40, 40, "waypoint", "solid")
+        # 右眼 - 作为绘制路径（小圆形，黑色）
+        cool_path.add_point(40, 24, "waypoint", "solid", "black", "black")  # 右眼中心
+        cool_path.add_point(38, 24, "waypoint", "solid", "black", "black")  # 右眼左端
+        cool_path.add_point(40, 22, "waypoint", "solid", "black", "black")  # 右眼上端
+        cool_path.add_point(42, 24, "waypoint", "solid", "black", "black")  # 右眼右端
+        cool_path.add_point(40, 26, "waypoint", "solid", "black", "black")  # 右眼下端
+        cool_path.add_point(40, 24, "waypoint", "solid", "black", "black")  # 回到右眼中心
         
-        cool_path.add_point(32, 32, "target", "solid")  # 回到中心
+        # 断开连接 - 右眼到墨镜
+        cool_path.add_point(20, 26, "waypoint", "none", "gray", "gray")  # 断开点
+        
+        # 墨镜（弧形）- 作为绘制路径（深蓝色）
+        cool_path.add_point(22, 28, "waypoint", "solid", "darkblue", "darkblue")  # 左墨镜左端
+        cool_path.add_point(24, 30, "waypoint", "solid", "darkblue", "darkblue")  # 左墨镜中心
+        cool_path.add_point(26, 28, "waypoint", "solid", "darkblue", "darkblue")  # 左墨镜右端
+        cool_path.add_point(38, 28, "waypoint", "solid", "darkblue", "darkblue")  # 右墨镜左端
+        cool_path.add_point(40, 30, "waypoint", "solid", "darkblue", "darkblue")  # 右墨镜中心
+        cool_path.add_point(42, 28, "waypoint", "solid", "darkblue", "darkblue")  # 右墨镜右端
+        cool_path.add_point(32, 30, "waypoint", "solid", "darkblue", "darkblue")  # 墨镜连接中点
+        
+        # 断开连接 - 墨镜到嘴巴
+        cool_path.add_point(28, 32, "waypoint", "none", "gray", "gray")  # 断开点
+        
+        # 嘴巴（直线）- 作为绘制路径（红色）
+        cool_path.add_point(24, 36, "waypoint", "solid", "red", "red")  # 嘴巴左端
+        cool_path.add_point(28, 36, "waypoint", "solid", "red", "red")  # 嘴巴左中点
+        cool_path.add_point(32, 36, "waypoint", "solid", "red", "red")  # 嘴巴中点
+        cool_path.add_point(36, 36, "waypoint", "solid", "red", "red")  # 嘴巴右中点
+        cool_path.add_point(40, 36, "waypoint", "solid", "red", "red")  # 嘴巴右端
+        
+        cool_path.add_point(32, 32, "target", "solid", "blue", "blue")  # 回到中心
         self.available_paths["😎 酷脸"] = cool_path
         
-        # ❤️ 爱心路径 - 放大版本，去掉装饰点
+        # ❤️ 爱心路径 - 完全重新设计，更圆润自然的爱心形状
         heart_path = GamePath("❤️ 爱心")
-        # 爱心的数学公式：r = a(1-sin(θ)) - 主要路径（实线），放大
-        a = 12  # 增大参数
-        # 只取12个关键点形成爱心
-        for i in range(12):
-            angle = i * 2 * np.pi / 12
+        
+        # 基于TACHIN字母的设计理念，简洁清晰的路径设计
+        # 爱心的数学公式：r = a(1-sin(θ)) - 主要路径（红色），在64x64范围内合理布局
+        a = 12  # 增大参数，让爱心更明显
+        
+        # 增加更多点形成更平滑的爱心，16个点（红色）
+        for i in range(16):
+            angle = i * 2 * np.pi / 16
             r = a * (1 - np.sin(angle))
             x = center_x + r * np.cos(angle)
             y = center_y + r * np.sin(angle)
-            point_type = "start" if i == 0 else ("target" if i == 11 else "waypoint")
-            heart_path.add_point(x, y, point_type, "solid")
+            point_type = "start" if i == 0 else ("target" if i == 15 else "waypoint")
+            heart_path.add_point(x, y, point_type, "solid", "red", "red")
         
-        # 爱心内部装饰点 - 去掉装饰点
-        # heart_path.add_point(32, 28, "waypoint", "none")  # 中心装饰
-        # heart_path.add_point(30, 30, "waypoint", "none")  # 左装饰
-        # heart_path.add_point(34, 30, "waypoint", "none")  # 右装饰
+        # 爱心内部装饰点 - 去掉装饰点，保持简洁
+        # 爱心外部装饰线 - 去掉装饰线，保持简洁
         
-        # 爱心外部装饰线 - 去掉装饰线
-        # heart_path.add_point(28, 24, "waypoint", "dashed")  # 左上装饰
-        # heart_path.add_point(36, 24, "waypoint", "dashed")  # 右上装饰
         self.available_paths["❤️ 爱心"] = heart_path
         
-        # ⭐ 星星路径 - 放大版本，去掉装饰点
+        # ⭐ 星星路径 - 完全重新设计，更清晰的五角星形状
         star_path = GamePath("⭐ 星星")
-        # 五角星的数学公式 - 主要路径（实线），放大
+        
+        # 基于TACHIN字母的设计理念，简洁清晰的路径设计
+        # 五角星的数学公式 - 主要路径（金色），在64x64范围内合理布局
         for i in range(10):
             angle = i * 2 * np.pi / 10
-            r = 16 if i % 2 == 0 else 8  # 交替使用外半径和内半径，增大
+            r = 16 if i % 2 == 0 else 8  # 交替使用外半径和内半径，增大尺寸
             x = center_x + r * np.cos(angle)
             y = center_y + r * np.sin(angle)
-            point_type = "start" if i == 0 else ("target" if i == 9 else "waypoint")
-            star_path.add_point(x, y, point_type, "solid")
+            point_type = "start" if i == 0 else ("waypoint" if i < 9 else "target")
+            star_path.add_point(x, y, point_type, "solid", "gold", "gold")
         
-        # 星星内部装饰点 - 去掉装饰点
-        # star_path.add_point(32, 32, "waypoint", "none")  # 中心点
-        # star_path.add_point(32, 28, "waypoint", "none")  # 下装饰
-        # star_path.add_point(32, 36, "waypoint", "none")  # 上装饰
-        # star_path.add_point(28, 32, "waypoint", "none")  # 左装饰
-        # star_path.add_point(36, 32, "waypoint", "none")  # 右装饰
+        # 星星内部装饰点 - 去掉装饰点，保持简洁
+        # 星星外部装饰线 - 去掉装饰线，保持简洁
         
-        star_path.add_point(center_x, center_y, "target", "solid")  # 回到中心
+        star_path.add_point(center_x, center_y, "waypoint", "solid", "gold", "gold")  # 回到中心
         self.available_paths["⭐ 星星"] = star_path
         
         print(f"📍 已加载 {len(self.available_paths)} 条预设路径")

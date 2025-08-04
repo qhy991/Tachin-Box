@@ -47,6 +47,12 @@ class PathVisualizationManagerOptimized:
         self.enable_debug_output = False    # 禁用调试输出
         self.animation_enabled = True       # 动画开关
         
+        # 🎯 新增：控制中间连接线显示
+        self.show_pending_lines = False     # 是否显示未完成的连接线（青色虚线）
+        
+        # 🎯 新增：控制字母间断点连接线显示
+        self.show_breakpoint_connections = False  # 是否显示不同字母之间的断点连接线
+        
         # 🎬 动画系统优化
         self.animation_time = 0.0
         self.pulse_speed = 2.0
@@ -194,6 +200,7 @@ class PathVisualizationManagerOptimized:
         # 🎯 批量处理连线，减少PyQtGraph对象创建
         completed_lines = []
         pending_lines = []
+        breakpoint_lines = []  # 新增：字母间断点连接线
         
         for i in range(len(points_to_render) - 1):
             point = points_to_render[i]
@@ -204,20 +211,37 @@ class PathVisualizationManagerOptimized:
             if connection_type == 'none':
                 continue
             
+            # 🎯 新增：检查是否为字母间断点连接线
+            is_breakpoint_connection = (
+                connection_type == 'breakpoint' or
+                point.get('is_breakpoint', False) or
+                next_point.get('is_breakpoint', False) or
+                point.get('letter_group') != next_point.get('letter_group')  # 不同字母组之间的连接
+            )
+            
             is_completed = point.get('completed', False)
             
-            if is_completed:
+            if is_breakpoint_connection:
+                # 字母间断点连接线
+                breakpoint_lines.append((point['x'], point['y'], next_point['x'], next_point['y']))
+            elif is_completed:
+                # 已完成的字母内部线条
                 completed_lines.append((point['x'], point['y'], next_point['x'], next_point['y']))
             else:
+                # 未完成的字母内部线条
                 pending_lines.append((point['x'], point['y'], next_point['x'], next_point['y']))
         
-        # 🎯 批量渲染已完成的线条
+        # 🎯 批量渲染已完成的线条（字母内部）
         if completed_lines:
             self._batch_render_lines(completed_lines, (144, 238, 144), Qt.SolidLine, 0.8)
         
-        # 🎯 批量渲染待完成的线条
-        if pending_lines:
+        # 🎯 批量渲染待完成的线条（字母内部，根据选项决定是否显示）
+        if pending_lines and self.show_pending_lines:
             self._batch_render_lines(pending_lines, (0, 255, 255), Qt.DashLine, 0.6)
+        
+        # 🎯 批量渲染字母间断点连接线（根据选项决定是否显示）
+        if breakpoint_lines and self.show_breakpoint_connections:
+            self._batch_render_lines(breakpoint_lines, (255, 0, 0), Qt.DashLine, 0.4)
     
     def _batch_render_lines(self, lines_data, color, style, alpha):
         """批量渲染线条 - 减少对象创建"""
@@ -226,11 +250,11 @@ class PathVisualizationManagerOptimized:
         all_y = []
         
         for x1, y1, x2, y2 in lines_data:
-            all_x.extend([x1, x2, None])  # None用于分隔线条
-            all_y.extend([y1, y2, None])
+            all_x.extend([x1, x2, np.nan])  # 使用NaN分隔线条
+            all_y.extend([y1, y2, np.nan])
         
         if all_x:
-            # 移除最后的None
+            # 移除最后的NaN
             all_x.pop()
             all_y.pop()
             
@@ -239,7 +263,7 @@ class PathVisualizationManagerOptimized:
                 x=all_x, 
                 y=all_y,
                 pen=pg.mkPen(color=color, width=2, style=style, alpha=alpha),
-                connect='finite'  # 使用None分隔的线条
+                connect='finite'  # 使用NaN分隔的线条
             )
             self.plot_widget.addItem(line_item)
             self.path_items_pool['lines'].append(line_item)
@@ -446,6 +470,16 @@ class PathVisualizationManagerOptimized:
                 self.animation_timer.stop()
             else:
                 self.animation_timer.start(100)
+        
+        # 🎯 新增：控制中间连接线显示
+        if 'show_pending_lines' in options:
+            self.show_pending_lines = options['show_pending_lines']
+            print(f"🎯 中间连接线显示: {'启用' if self.show_pending_lines else '禁用'}")
+        
+        # 🎯 新增：控制字母间断点连接线显示
+        if 'show_breakpoint_connections' in options:
+            self.show_breakpoint_connections = options['show_breakpoint_connections']
+            print(f"🎯 字母间断点连接线显示: {'启用' if self.show_breakpoint_connections else '禁用'}")
     
     def get_performance_stats(self):
         """获取性能统计"""
