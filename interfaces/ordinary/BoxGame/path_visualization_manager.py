@@ -100,7 +100,7 @@ class PathVisualizationManager:
             self._render_navigation_info(box_position)
     
     def _render_path_line(self):
-        """渲染路径线条"""
+        """渲染路径线条 - 增强版，添加更粗的线条"""
         if len(self.current_path_points) < 2:
             return
             
@@ -167,11 +167,14 @@ class PathVisualizationManager:
                 line_alpha = 0.6
                 line_style = Qt.DashLine
             
+            # 🎯 增强：更粗的线条
+            line_width = 4 if is_completed else 3  # 完成的线条更粗
+            
             # 创建线段
             line = pg.PlotDataItem(
                 x=[path_x[i], path_x[i+1]], 
                 y=[path_y[i], path_y[i+1]],
-                pen=pg.mkPen(color=line_color, width=2, style=line_style, alpha=line_alpha)
+                pen=pg.mkPen(color=line_color, width=line_width, style=line_style, alpha=line_alpha)
             )
             self.plot_widget.addItem(line)
             self.path_items.append(line)
@@ -183,6 +186,96 @@ class PathVisualizationManager:
         
         print(f"🔗 路径线条渲染完成，共绘制了 {drawn_lines} 条连线")
         print(f"🔗 断点数量: {len(break_points)}, 断点位置: {break_points}")
+    
+    def _add_arrow_to_line(self, x1, y1, x2, y2, color, alpha):
+        """在线段上添加箭头 - 使用兼容的方式"""
+        import numpy as np
+        
+        # 计算线段中点
+        mid_x = (x1 + x2) / 2
+        mid_y = (y1 + y2) / 2
+        
+        # 计算线段方向
+        dx = x2 - x1
+        dy = y2 - y1
+        length = np.sqrt(dx*dx + dy*dy)
+        
+        if length > 0:
+            # 归一化方向向量
+            dx /= length
+            dy /= length
+            
+            # 计算箭头角度（弧度转度）
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = np.degrees(angle_rad)
+            
+            # 箭头参数
+            arrow_length = min(length * 0.3, 8)  # 箭头长度，不超过线段长度的30%或8像素
+            arrow_width = 6  # 箭头宽度
+            
+            # 计算箭头位置（在线段中点附近）
+            arrow_pos_x = mid_x + dx * (length * 0.3)
+            arrow_pos_y = mid_y + dy * (length * 0.3)
+            
+            # 🏹 使用兼容的方式创建箭头 - 方法1：使用PlotDataItem绘制箭头
+            try:
+                # 计算箭头的三个点
+                arrow_head_x = arrow_pos_x + arrow_length * np.cos(angle_rad)
+                arrow_head_y = arrow_pos_y + arrow_length * np.sin(angle_rad)
+                
+                # 计算箭头的两个侧边点
+                side_angle1 = angle_rad + np.radians(30)  # 30度侧边
+                side_angle2 = angle_rad - np.radians(30)  # -30度侧边
+                
+                side_length = arrow_length * 0.6
+                side1_x = arrow_head_x - side_length * np.cos(side_angle1)
+                side1_y = arrow_head_y - side_length * np.sin(side_angle1)
+                side2_x = arrow_head_x - side_length * np.cos(side_angle2)
+                side2_y = arrow_head_y - side_length * np.sin(side_angle2)
+                
+                # 绘制箭头主体（从箭头位置到箭头头部）
+                arrow_body = pg.PlotDataItem(
+                    x=[arrow_pos_x, arrow_head_x],
+                    y=[arrow_pos_y, arrow_head_y],
+                    pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                )
+                self.plot_widget.addItem(arrow_body)
+                self.path_items.append(arrow_body)
+                
+                # 绘制箭头的两个侧边
+                arrow_side1 = pg.PlotDataItem(
+                    x=[arrow_head_x, side1_x],
+                    y=[arrow_head_y, side1_y],
+                    pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                )
+                self.plot_widget.addItem(arrow_side1)
+                self.path_items.append(arrow_side1)
+                
+                arrow_side2 = pg.PlotDataItem(
+                    x=[arrow_head_x, side2_x],
+                    y=[arrow_head_y, side2_y],
+                    pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                )
+                self.plot_widget.addItem(arrow_side2)
+                self.path_items.append(arrow_side2)
+                
+                print(f"🏹 添加箭头: 位置({arrow_pos_x:.1f}, {arrow_pos_y:.1f}), 角度{angle_deg:.1f}°")
+                
+            except Exception as e:
+                print(f"⚠️ 箭头创建失败，使用备用方法: {e}")
+                # 备用方法：使用简单的线条表示箭头
+                arrow_end_x = arrow_pos_x + dx * arrow_length
+                arrow_end_y = arrow_pos_y + dy * arrow_length
+                
+                arrow_line = pg.PlotDataItem(
+                    x=[arrow_pos_x, arrow_end_x],
+                    y=[arrow_pos_y, arrow_end_y],
+                    pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                )
+                self.plot_widget.addItem(arrow_line)
+                self.path_items.append(arrow_line)
+                
+                print(f"🏹 添加简单箭头: 位置({arrow_pos_x:.1f}, {arrow_pos_y:.1f})")
     
     def _render_path_points(self):
         """渲染路径点"""
@@ -266,22 +359,22 @@ class PathVisualizationManager:
             
         target_x, target_y = self.current_target['x'], self.current_target['y']
         
-        # 脉动效果圆圈
+        # 脉动效果圆圈 - 增大尺寸
         pulse_scale = 1 + 0.2 * np.sin(self.animation_time * self.pulse_speed * 1.5)
         
-        # 创建圆圈效果（使用ScatterPlotItem模拟）
+        # 创建圆圈效果（使用ScatterPlotItem模拟）- 增大基础尺寸
         circle_item = pg.ScatterPlotItem(
             x=[target_x], 
             y=[target_y],
             symbol='o',
-            size=int(16 * pulse_scale),
+            size=int(32 * pulse_scale),  # 从16增大到32
             brush=None,
-            pen=pg.mkPen(color=(0, 255, 0), width=2, alpha=0.8)  # lime RGB
+            pen=pg.mkPen(color=(0, 255, 0), width=3, alpha=0.8)  # lime RGB，增大线宽
         )
         self.plot_widget.addItem(circle_item)
         self.path_items.append(circle_item)
         
-        # 绘制指向目标的导航箭头
+        # 绘制指向目标的导航箭头（引导线）
         if box_position is not None:
             # 确保box_position是数组时正确提取坐标
             if hasattr(box_position, '__len__') and len(box_position) >= 2:
@@ -305,14 +398,71 @@ class PathVisualizationManager:
                 arrow_end_x = target_x - dx * 5
                 arrow_end_y = target_y - dy * 5
                 
-                # 创建箭头
-                arrow = pg.PlotDataItem(
-                    x=[arrow_start_x, arrow_end_x],
-                    y=[arrow_start_y, arrow_end_y],
-                    pen=pg.mkPen(color=(0, 255, 0), width=3, alpha=0.8)  # lime RGB
-                )
-                self.plot_widget.addItem(arrow)
-                self.path_items.append(arrow)
+                # 使用新的引导箭头方法
+                self._render_guide_arrow(arrow_start_x, arrow_start_y, arrow_end_x, arrow_end_y)
+    
+    def _render_guide_arrow(self, start_x, start_y, end_x, end_y):
+        """渲染引导箭头 - 更粗的线条和明显的箭头"""
+        import numpy as np
+        
+        # 计算箭头方向
+        dx = end_x - start_x
+        dy = end_y - start_y
+        length = np.sqrt(dx*dx + dy*dy)
+        
+        if length > 0:
+            # 归一化方向向量
+            dx /= length
+            dy /= length
+            
+            # 计算箭头角度
+            angle_rad = np.arctan2(dy, dx)
+            
+            # 箭头参数 - 更粗的线条和更大的箭头
+            arrow_length = 12  # 箭头长度
+            arrow_width = 8    # 箭头宽度
+            line_width = 6     # 引导线宽度（更粗）
+            
+            # 计算箭头头部位置（距离终点一定距离）
+            arrow_head_x = end_x - dx * 8
+            arrow_head_y = end_y - dy * 8
+            
+            # 绘制引导线主体（更粗）
+            guide_line = pg.PlotDataItem(
+                x=[start_x, arrow_head_x],
+                y=[start_y, arrow_head_y],
+                pen=pg.mkPen(color=(0, 255, 0), width=line_width, alpha=0.9)  # 更粗的绿色线条
+            )
+            self.plot_widget.addItem(guide_line)
+            self.path_items.append(guide_line)
+            
+            # 绘制箭头头部
+            # 计算箭头的两个侧边点
+            side_angle1 = angle_rad + np.radians(30)  # 30度侧边
+            side_angle2 = angle_rad - np.radians(30)  # -30度侧边
+            
+            side_length = arrow_length * 0.8
+            side1_x = arrow_head_x - side_length * np.cos(side_angle1)
+            side1_y = arrow_head_y - side_length * np.sin(side_angle1)
+            side2_x = arrow_head_x - side_length * np.cos(side_angle2)
+            side2_y = arrow_head_y - side_length * np.sin(side_angle2)
+            
+            # 绘制箭头的两个侧边
+            arrow_side1 = pg.PlotDataItem(
+                x=[arrow_head_x, side1_x],
+                y=[arrow_head_y, side1_y],
+                pen=pg.mkPen(color=(0, 255, 0), width=arrow_width, alpha=0.9)
+            )
+            self.plot_widget.addItem(arrow_side1)
+            self.path_items.append(arrow_side1)
+            
+            arrow_side2 = pg.PlotDataItem(
+                x=[arrow_head_x, side2_x],
+                y=[arrow_head_y, side2_y],
+                pen=pg.mkPen(color=(0, 255, 0), width=arrow_width, alpha=0.9)
+            )
+            self.plot_widget.addItem(arrow_side2)
+            self.path_items.append(arrow_side2)
     
     def _render_next_target(self):
         """渲染下一个目标"""

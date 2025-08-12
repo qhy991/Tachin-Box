@@ -230,18 +230,32 @@ class PathPlanner:
         precision_path.add_point(32, 32, "target")
         self.available_paths["精确挑战"] = precision_path
         
-        # 🤖 AI字母路径 - 优化版本，只连接关键点
-        ai_path = GamePath("AI字母")
-        # A字母 - 只连接关键点
-        ai_path.add_point(15, 10, "start")  # A的左底部
-        ai_path.add_point(20, 20, "waypoint")  # A的顶部
-        ai_path.add_point(25, 10, "waypoint")  # A的右底部
-        ai_path.add_point(20, 15, "waypoint")  # A的横线中点
-        # I字母 - 只连接关键点
-        ai_path.add_point(30, 10, "waypoint")  # I的底部
-        ai_path.add_point(30, 20, "waypoint")  # I的顶部
-        ai_path.add_point(30, 10, "target")  # 回到I的底部
-        self.available_paths["AI字母"] = ai_path
+        # 🤖 AI字母路径 - 居中优化版本
+        ai_path = GamePath("AI智能路径")
+        
+        # 字母宽度：6单位，高度：40单位，间距：2单位，已居中到游戏区域中心(32,32)
+        
+        # A字母 - 两条斜线+横线 (x+15, y+4)
+        ai_path.add_point(23, 52, "start", "solid")  # A的左底部
+        ai_path.add_point(26, 12, "waypoint", "solid")  # A的顶部
+        ai_path.add_point(29, 52, "waypoint", "solid")  # A的右底部
+        ai_path.add_point(27, 32, "waypoint", "solid")  # A的横线右端
+        ai_path.add_point(25, 32, "waypoint", "solid")  # A的横线左端
+        
+        # 断开连接 - 不连接到I字母
+        ai_path.add_point(37, 12, "waypoint", "none")  # 断开点
+        
+        # I字母 - 顶部横线+竖线+底部横线 (x+15, y+4)
+        ai_path.add_point(37, 12, "waypoint", "solid")  # I的顶部左端
+        ai_path.add_point(41, 12, "waypoint", "solid")  # I的顶部右端
+        ai_path.add_point(39, 12, "waypoint", "solid")  # I的顶部中点
+        ai_path.add_point(39, 52, "waypoint", "solid")  # I的底部中点
+        ai_path.add_point(37, 52, "waypoint", "solid")  # I的底部左端
+        
+        # 最终目标点
+        ai_path.add_point(41, 52, "target", "solid")  # 中心目标点
+        
+        self.available_paths["AI智能路径"] = ai_path
         
         # 🎯 TACHIN字母路径 - 基于simple_test.py参考，简洁清晰的独立字母设计
         tachin_path = GamePath("TACHIN字母")
@@ -395,14 +409,15 @@ class PathPlanner:
         cool_path.add_point(32, 32, "target", "solid")  # 回到中心
         self.available_paths["😎 酷脸"] = cool_path
         
-        # ❤️ 爱心路径 - 放大版本，去掉装饰点
+        # ❤️ 爱心路径 - 居中修正版本，确保爱心朝上且居中
         heart_path = GamePath("❤️ 爱心")
-        # 爱心的数学公式：r = a(1-sin(θ)) - 主要路径（实线），放大
+        # 爱心的数学公式：r = a(1+sin(θ)) - 修正为朝上的爱心，并居中
         a = 12  # 增大参数
+        center_x, center_y = 32, 22  # 将中心点向上移动10.5个单位，从32移到22
         # 只取12个关键点形成爱心
         for i in range(12):
             angle = i * 2 * np.pi / 12
-            r = a * (1 - np.sin(angle))
+            r = a * (1 + np.sin(angle))  # 修正：使用 +sin 而不是 -sin
             x = center_x + r * np.cos(angle)
             y = center_y + r * np.sin(angle)
             point_type = "start" if i == 0 else ("target" if i == 11 else "waypoint")

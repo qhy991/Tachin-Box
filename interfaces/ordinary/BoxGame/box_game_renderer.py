@@ -3,7 +3,7 @@
 推箱子游戏渲染器模块（PyQtGraph优化版）
 Renderer Module for Box Push Game (PyQtGraph Optimized Version)
 
-本模块负责游戏状态的可视化渲染，包括压力分布、游戏区域、COP轨迹等。
+本模块负责游戏状态的可视化渲染，包括压力分布、游戏区域、COP点等。
 现在使用PyQtGraph替代matplotlib，提供更好的性能和交互性。
 """
 
@@ -131,13 +131,13 @@ class BoxGameRenderer(QWidget):
         self.pressure_surface_item = None
         self.pressure_image_item = None
         
-        # 📈 历史轨迹
-        self.cop_history = deque(maxlen=50)
-        self.angle_history = deque(maxlen=20)
-        self.trajectory_lines = None
+        # 📈 历史轨迹 - 删除轨迹相关代码
+        # self.cop_history = deque(maxlen=50)  # 删除轨迹历史
+        # self.angle_history = deque(maxlen=20)  # 删除角度历史
+        # self.trajectory_lines = None  # 删除轨迹线条
         
-        # ⚙️ 可视化参数
-        self.show_trajectory = True
+        # ⚙️ 可视化参数 - 删除轨迹显示选项
+        # self.show_trajectory = True  # 删除轨迹显示开关
         self.show_analysis_details = True
         self.show_pressure_overlay = True
         self.animation_speed = 0.1
@@ -293,10 +293,7 @@ class BoxGameRenderer(QWidget):
         )
         
         # 🎨 设置2D热力图平滑参数
-        self.set_2d_smoothing_options(gaussian_sigma=0.0)
-        
-        # 🎨 设置轨迹平滑参数
-        self.set_trajectory_smoothing_options(window_size=5, sigma=1.0)
+        self.set_2d_smoothing_options(gaussian_sigma=1.0)
         
         # 🎨 重置3D相机位置到最佳视角
         self.reset_3d_camera_position()
@@ -891,14 +888,6 @@ class BoxGameRenderer(QWidget):
         # 🚀 设置游戏状态变化标志
         self.game_state_changed = True
         
-        # 更新COP历史
-        if self.current_cop is not None:
-            self.cop_history.append(self.current_cop)
-        
-        # 更新角度历史
-        if self.consensus_angle is not None:
-            self.angle_history.append(self.consensus_angle)
-        
         # 检查目标达成
         self.check_target_reached()
         
@@ -961,9 +950,6 @@ class BoxGameRenderer(QWidget):
             # 如果是第一次计算，设置为初始COP点
             if self.initial_cop is None:
                 self.initial_cop = [cop_x, cop_y]
-            
-            # 添加到历史轨迹
-            self.cop_history.append([cop_x, cop_y])
             
             # 设置游戏状态变化标志
             self.game_state_changed = True
@@ -1165,7 +1151,7 @@ class BoxGameRenderer(QWidget):
             # 📦 渲染箱子
             self.render_box()
             
-            # 🎯 渲染COP和轨迹
+            # 🎯 渲染COP点
             self.render_cop_and_trajectory()
             
             # 🎆 更新和渲染烟花效果
@@ -1292,18 +1278,6 @@ class BoxGameRenderer(QWidget):
             print("🔄 强制重新渲染2D热力图以应用新的平滑参数")
             self.pressure_data_changed = True
             self.update_pressure_only()
-    
-    def set_trajectory_smoothing_options(self, window_size=5, sigma=1.0):
-        """设置轨迹平滑参数"""
-        self.trajectory_window_size = window_size
-        self.trajectory_sigma = sigma
-        print(f"🎨 轨迹平滑参数已设置 - 窗口大小: {window_size}, 高斯平滑sigma: {sigma}")
-        
-        # 🔄 强制重新渲染游戏区域以应用新的平滑参数
-        if hasattr(self, 'cop_history') and len(self.cop_history) > 0:
-            print("🔄 强制重新渲染游戏区域以应用新的轨迹平滑参数")
-            self.game_state_changed = True
-            self.update_game_area_only()
     
     def set_3d_display_options(self, grid_scale=50.0, camera_distance=8, camera_elevation=25, camera_azimuth=45, enhancement_factor=3000):
         """
@@ -1502,7 +1476,7 @@ class BoxGameRenderer(QWidget):
             traceback.print_exc()
     
     def render_cop_and_trajectory(self):
-        """渲染压力中心和轨迹 - PyQtGraph版本，添加轨迹平滑"""
+        """渲染压力中心 - 删除轨迹渲染功能"""
         # 🎯 绘制当前压力中心
         if self.current_cop is not None and self.current_cop[0] is not None and self.current_cop[1] is not None:
             cop_item = pg.ScatterPlotItem(
@@ -1527,74 +1501,26 @@ class BoxGameRenderer(QWidget):
             )
             self.game_plot_widget.addItem(initial_cop_item)
         
-        # 📈 绘制轨迹 - 添加平滑处理
-        if self.show_trajectory and len(self.cop_history) > 1:
-            # 过滤掉包含None的轨迹点
-            valid_trajectory = []
-            for point in self.cop_history:
-                if point is not None and len(point) >= 2 and point[0] is not None and point[1] is not None:
-                    valid_trajectory.append(point)
-            
-            if len(valid_trajectory) > 1:
-                trajectory = np.array(valid_trajectory)
-                
-                # 🎨 添加轨迹平滑处理
-                smoothed_trajectory = self.smooth_trajectory(trajectory)
-                
-                trajectory_item = pg.PlotDataItem(
-                    x=smoothed_trajectory[:, 0],
-                    y=smoothed_trajectory[:, 1],
-                    pen=pg.mkPen('blue', width=2, alpha=0.6)
-                )
-                self.game_plot_widget.addItem(trajectory_item)
-    
-    def smooth_trajectory(self, trajectory, window_size=None, sigma=None):
-        """
-        平滑轨迹数据
-        
-        Args:
-            trajectory: 原始轨迹数据 (N, 2)
-            window_size: 滑动窗口大小，用于移动平均（如果为None，使用默认值）
-            sigma: 高斯平滑的sigma值（如果为None，使用默认值）
-            
-        Returns:
-            平滑后的轨迹数据
-        """
-        try:
-            # 使用可配置的参数，如果没有设置则使用默认值
-            if window_size is None:
-                window_size = getattr(self, 'trajectory_window_size', 5)
-            if sigma is None:
-                sigma = getattr(self, 'trajectory_sigma', 1.0)
-            
-            if len(trajectory) < window_size:
-                return trajectory
-            
-            # 1. 移动平均平滑
-            smoothed_x = np.convolve(trajectory[:, 0], np.ones(window_size)/window_size, mode='valid')
-            smoothed_y = np.convolve(trajectory[:, 1], np.ones(window_size)/window_size, mode='valid')
-            
-            # 2. 高斯平滑（可选，进一步减少噪声）
-            if sigma > 0:
-                from scipy.ndimage import gaussian_filter1d
-                smoothed_x = gaussian_filter1d(smoothed_x, sigma=sigma)
-                smoothed_y = gaussian_filter1d(smoothed_y, sigma=sigma)
-            
-            # 3. 重建轨迹数组
-            smoothed_trajectory = np.column_stack([smoothed_x, smoothed_y])
-            
-            # 4. 确保平滑后的轨迹长度与原始轨迹匹配
-            if len(smoothed_trajectory) < len(trajectory):
-                # 如果平滑后长度不足，用原始数据补充
-                padding_length = len(trajectory) - len(smoothed_trajectory)
-                padding = trajectory[-padding_length:]
-                smoothed_trajectory = np.vstack([smoothed_trajectory, padding])
-            
-            return smoothed_trajectory
-            
-        except Exception as e:
-            print(f"⚠️ 轨迹平滑处理失败: {e}")
-            return trajectory
+        # 📈 绘制轨迹 - 删除轨迹渲染功能
+        # if self.show_trajectory and len(self.cop_history) > 1:
+        #     # 过滤掉包含None的轨迹点
+        #     valid_trajectory = []
+        #     for point in self.cop_history:
+        #         if point is not None and len(point) >= 2 and point[0] is not None and point[1] is not None:
+        #             valid_trajectory.append(point)
+        #     
+        #     if len(valid_trajectory) > 1:
+        #         trajectory = np.array(valid_trajectory)
+        #         
+        #         # 🎨 添加轨迹平滑处理
+        #         smoothed_trajectory = self.smooth_trajectory(trajectory)
+        #         
+        #         trajectory_item = pg.PlotDataItem(
+        #             x=smoothed_trajectory[:, 0],
+        #             y=smoothed_trajectory[:, 1],
+        #             pen=pg.mkPen('blue', width=2, alpha=0.6)
+        #         )
+        #         self.game_plot_widget.addItem(trajectory_item)
     
     def render_movement_direction_arrow(self):
         """绘制从箱子到目标位置的移动方向箭头和角度 - PyQtGraph版本"""
@@ -1795,18 +1721,20 @@ class BoxGameRenderer(QWidget):
     
     def reset_visualization(self):
         """重置可视化 - PyQtGraph版本"""
-        # 清空历史数据
-        self.cop_history.clear()
-        self.angle_history.clear()
+        # 清空历史数据 - 删除轨迹历史清除
+        # if hasattr(self, 'cop_history') and len(self.cop_history) > 0:
+        #     self.cop_history.clear()
+        # if hasattr(self, 'angle_history') and len(self.angle_history) > 0:
+        #     self.angle_history.clear()
         
-        # 重置状态
+        # 重置游戏状态
+        self.current_cop = None
+        self.initial_cop = None
         self.is_contact = False
         self.is_tangential = False
         self.is_sliding = False
         self.consensus_angle = None
         self.consensus_confidence = 0.0
-        self.current_cop = None
-        self.initial_cop = None
         self.movement_distance = 0.0
         
         # 🔄 重置idle计数器
@@ -1841,8 +1769,6 @@ class BoxGameRenderer(QWidget):
                 return
             
             # 处理其他可视化选项
-            if 'show_trajectory' in options:
-                self.show_trajectory = options['show_trajectory']
             if 'show_analysis_details' in options:
                 self.show_analysis_details = options['show_analysis_details']
             if 'show_pressure_overlay' in options:

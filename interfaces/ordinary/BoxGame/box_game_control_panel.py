@@ -306,11 +306,11 @@ class BoxGameControlPanel(QWidget):
         """创建Logo显示组"""
         # 🎨 直接使用QLabel，不使用GroupBox
         logo_label = QLabel()
-        logo_label.setFixedSize(100, 100)  # 设置固定大小
+        logo_label.setFixedSize(120, 120)  # 设置固定大小
         logo_label.setStyleSheet("""
             QLabel {
                 background-color: transparent;
-                padding: 2px;
+                padding: 5px;
             }
         """)
         
@@ -371,14 +371,14 @@ class BoxGameControlPanel(QWidget):
     
     def create_path_planning_group(self, parent_layout):
         group = QGroupBox("路径引导")
-        group.setMaximumHeight(80)  # 限制高度以适应顶部布局
-        group.setMinimumWidth(400)  # 增加最小宽度，确保所有控件都能显示
+        group.setMaximumHeight(120)  # 限制高度以适应顶部布局
+        group.setMinimumWidth(360)  # 增加最小宽度，确保所有控件都能显示
         layout = QHBoxLayout(group)  # 改为水平布局
         layout.setContentsMargins(5, 5, 5, 5)  # 减少内边距
         layout.setSpacing(5)  # 减少间距
 
         # 路径引导开关按钮
-        self.path_guide_btn = QPushButton("🗺️ 开启引导")
+        self.path_guide_btn = QPushButton("🎮 开启游戏")
         self.path_guide_btn.setCheckable(True)  # 可切换的按钮
         self.path_guide_btn.setStyleSheet("""
             QPushButton {
@@ -430,7 +430,7 @@ class BoxGameControlPanel(QWidget):
         
         # 更新按钮文本和样式
         if is_checked:
-            self.path_guide_btn.setText("🗺️ 关闭引导")
+            self.path_guide_btn.setText("🎮 关闭游戏")
             print("🗺️ 路径引导已开启")
             
             # 🎨 路径引导开启时自动切换到2D模式
@@ -449,7 +449,7 @@ class BoxGameControlPanel(QWidget):
                 # 发送切换到2D模式的信号
                 self.visualization_changed.emit({'toggle_heatmap_mode': True})
         else:
-            self.path_guide_btn.setText("🗺️ 开启引导")
+            self.path_guide_btn.setText("🎮 开启游戏")
             print("🗺️ 路径引导已关闭")
             # 关闭路径引导时保持当前的热力图模式，不自动切换
         
@@ -495,7 +495,7 @@ class BoxGameControlPanel(QWidget):
     def create_sensor_control_group(self, parent_layout):
         """创建传感器控制组"""
         group = QGroupBox("传感器控制")
-        group.setMaximumHeight(80)  # 限制高度以适应顶部布局
+        group.setMaximumHeight(120)  # 限制高度以适应顶部布局
         layout = QHBoxLayout(group)  # 改为水平布局
         layout.setContentsMargins(5, 5, 5, 5)  # 减少内边距
         layout.setSpacing(5)  # 减少间距
@@ -564,8 +564,8 @@ class BoxGameControlPanel(QWidget):
     def create_visualization_control_group(self, parent_layout):
         """创建可视化控制组"""
         group = QGroupBox("可视化控制")
-        group.setMaximumHeight(80)  # 与其他组保持一致的高度
-        group.setMinimumWidth(100)  # 设置最小宽度，确保有足够空间
+        group.setMaximumHeight(120)  # 与其他组保持一致的高度
+        group.setMinimumWidth(120)  # 设置最小宽度，确保有足够空间
         layout = QHBoxLayout(group)  # 改为水平布局
         layout.setContentsMargins(5, 5, 5, 5)  # 减少内边距
         layout.setSpacing(5)  # 减少间距
@@ -793,7 +793,7 @@ class BoxGameControlPanel(QWidget):
     def create_status_group(self, parent_layout):
         """创建状态显示组 - 显示控制模式和渲染帧率"""
         group = QGroupBox("系统状态")
-        group.setMaximumHeight(60)
+        group.setMaximumHeight(120)
         layout = QHBoxLayout(group)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)

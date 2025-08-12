@@ -187,7 +187,7 @@ class PathVisualizationManagerOptimized:
             print(f"🎨 路径渲染性能: 当前={render_time*1000:.1f}ms, 平均={avg_time*1000:.1f}ms")
     
     def _render_path_line_optimized(self, points_to_render):
-        """渲染路径线条 - 优化版"""
+        """渲染路径线条 - 优化版，增强版，添加更粗的线条"""
         if len(points_to_render) < 2:
             return
         
@@ -211,16 +211,16 @@ class PathVisualizationManagerOptimized:
             else:
                 pending_lines.append((point['x'], point['y'], next_point['x'], next_point['y']))
         
-        # 🎯 批量渲染已完成的线条
+        # 🎯 批量渲染已完成的线条 - 更粗的线条
         if completed_lines:
-            self._batch_render_lines(completed_lines, (144, 238, 144), Qt.SolidLine, 0.8)
+            self._batch_render_lines(completed_lines, (144, 238, 144), Qt.SolidLine, 0.8, line_width=4)
         
-        # 🎯 批量渲染待完成的线条
+        # 🎯 批量渲染待完成的线条 - 更粗的线条
         if pending_lines:
-            self._batch_render_lines(pending_lines, (0, 255, 255), Qt.DashLine, 0.6)
+            self._batch_render_lines(pending_lines, (0, 255, 255), Qt.DashLine, 0.6, line_width=3)
     
-    def _batch_render_lines(self, lines_data, color, style, alpha):
-        """批量渲染线条 - 减少对象创建"""
+    def _batch_render_lines(self, lines_data, color, style, alpha, line_width=2):
+        """批量渲染线条 - 减少对象创建，支持自定义线宽"""
         # 收集所有线条的坐标
         all_x = []
         all_y = []
@@ -238,11 +238,98 @@ class PathVisualizationManagerOptimized:
             line_item = pg.PlotDataItem(
                 x=all_x, 
                 y=all_y,
-                pen=pg.mkPen(color=color, width=2, style=style, alpha=alpha),
+                pen=pg.mkPen(color=color, width=line_width, style=style, alpha=alpha),
                 connect='finite'  # 使用None分隔的线条
             )
             self.plot_widget.addItem(line_item)
             self.path_items_pool['lines'].append(line_item)
+    
+    def _batch_render_arrows(self, lines_data, color, alpha):
+        """批量渲染箭头 - 为线条添加方向指示"""
+        import numpy as np
+        
+        for x1, y1, x2, y2 in lines_data:
+            # 计算线段中点
+            mid_x = (x1 + x2) / 2
+            mid_y = (y1 + y2) / 2
+            
+            # 计算线段方向
+            dx = x2 - x1
+            dy = y2 - y1
+            length = np.sqrt(dx*dx + dy*dy)
+            
+            if length > 0:
+                # 归一化方向向量
+                dx /= length
+                dy /= length
+                
+                # 计算箭头角度（弧度转度）
+                angle_rad = np.arctan2(dy, dx)
+                angle_deg = np.degrees(angle_rad)
+                
+                # 箭头参数
+                arrow_length = min(length * 0.3, 8)  # 箭头长度，不超过线段长度的30%或8像素
+                arrow_width = 6  # 箭头宽度
+                
+                # 计算箭头位置（在线段中点附近）
+                arrow_pos_x = mid_x + dx * (length * 0.3)
+                arrow_pos_y = mid_y + dy * (length * 0.3)
+                
+                # 🏹 使用兼容的方式创建箭头
+                try:
+                    # 计算箭头的三个点
+                    arrow_head_x = arrow_pos_x + arrow_length * np.cos(angle_rad)
+                    arrow_head_y = arrow_pos_y + arrow_length * np.sin(angle_rad)
+                    
+                    # 计算箭头的两个侧边点
+                    side_angle1 = angle_rad + np.radians(30)  # 30度侧边
+                    side_angle2 = angle_rad - np.radians(30)  # -30度侧边
+                    
+                    side_length = arrow_length * 0.6
+                    side1_x = arrow_head_x - side_length * np.cos(side_angle1)
+                    side1_y = arrow_head_y - side_length * np.sin(side_angle1)
+                    side2_x = arrow_head_x - side_length * np.cos(side_angle2)
+                    side2_y = arrow_head_y - side_length * np.sin(side_angle2)
+                    
+                    # 绘制箭头主体（从箭头位置到箭头头部）
+                    arrow_body = pg.PlotDataItem(
+                        x=[arrow_pos_x, arrow_head_x],
+                        y=[arrow_pos_y, arrow_head_y],
+                        pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                    )
+                    self.plot_widget.addItem(arrow_body)
+                    self.path_items_pool['lines'].append(arrow_body)
+                    
+                    # 绘制箭头的两个侧边
+                    arrow_side1 = pg.PlotDataItem(
+                        x=[arrow_head_x, side1_x],
+                        y=[arrow_head_y, side1_y],
+                        pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                    )
+                    self.plot_widget.addItem(arrow_side1)
+                    self.path_items_pool['lines'].append(arrow_side1)
+                    
+                    arrow_side2 = pg.PlotDataItem(
+                        x=[arrow_head_x, side2_x],
+                        y=[arrow_head_y, side2_y],
+                        pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                    )
+                    self.plot_widget.addItem(arrow_side2)
+                    self.path_items_pool['lines'].append(arrow_side2)
+                    
+                except Exception as e:
+                    print(f"⚠️ 箭头创建失败，使用备用方法: {e}")
+                    # 备用方法：使用简单的线条表示箭头
+                    arrow_end_x = arrow_pos_x + dx * arrow_length
+                    arrow_end_y = arrow_pos_y + dy * arrow_length
+                    
+                    arrow_line = pg.PlotDataItem(
+                        x=[arrow_pos_x, arrow_end_x],
+                        y=[arrow_pos_y, arrow_end_y],
+                        pen=pg.mkPen(color=color, width=arrow_width, alpha=alpha)
+                    )
+                    self.plot_widget.addItem(arrow_line)
+                    self.path_items_pool['lines'].append(arrow_line)
     
     def _render_path_points_optimized(self, points_to_render):
         """渲染路径点 - 优化版"""
@@ -337,16 +424,16 @@ class PathVisualizationManagerOptimized:
         
         target_x, target_y = self.current_target['x'], self.current_target['y']
         
-        # 创建脉动圆圈
+        # 创建脉动圆圈 - 增大尺寸
         pulse_scale = 1 + 0.2 * np.sin(self.animation_time * self.pulse_speed * 1.5)
         
         circle_item = pg.ScatterPlotItem(
             x=[target_x], 
             y=[target_y],
             symbol='o',
-            size=int(16 * pulse_scale),
+            size=int(32 * pulse_scale),  # 从16增大到32
             brush=None,
-            pen=pg.mkPen(color=(0, 255, 0), width=2, alpha=0.8)
+            pen=pg.mkPen(color=(0, 255, 0), width=3, alpha=0.8)  # 增大线宽
         )
         circle_item._is_current_target_circle = True  # 标记为当前目标圆圈
         self.plot_widget.addItem(circle_item)
@@ -357,7 +444,9 @@ class PathVisualizationManagerOptimized:
             self._render_navigation_arrow_optimized(box_position, target_x, target_y)
     
     def _render_navigation_arrow_optimized(self, box_position, target_x, target_y):
-        """渲染导航箭头 - 优化版"""
+        """渲染导航箭头 - 优化版，更粗的线条和明显的箭头"""
+        import numpy as np
+        
         if hasattr(box_position, '__len__') and len(box_position) >= 2:
             box_x, box_y = box_position[0], box_position[1]
         else:
@@ -372,19 +461,70 @@ class PathVisualizationManagerOptimized:
             dx /= distance
             dy /= distance
             
-            # 简化的箭头渲染
+            # 箭头起点和终点
             arrow_start_x = box_x + dx * 15
             arrow_start_y = box_y + dy * 15
             arrow_end_x = target_x - dx * 5
             arrow_end_y = target_y - dy * 5
             
-            arrow = pg.PlotDataItem(
-                x=[arrow_start_x, arrow_end_x],
-                y=[arrow_start_y, arrow_end_y],
-                pen=pg.mkPen(color=(0, 255, 0), width=3, alpha=0.8)
-            )
-            self.plot_widget.addItem(arrow)
-            self.path_items_pool['lines'].append(arrow)
+            # 计算箭头方向
+            arrow_dx = arrow_end_x - arrow_start_x
+            arrow_dy = arrow_end_y - arrow_start_y
+            arrow_length = np.sqrt(arrow_dx*arrow_dx + arrow_dy*arrow_dy)
+            
+            if arrow_length > 0:
+                # 归一化方向向量
+                arrow_dx /= arrow_length
+                arrow_dy /= arrow_length
+                
+                # 计算箭头角度
+                angle_rad = np.arctan2(arrow_dy, arrow_dx)
+                
+                # 箭头参数 - 更粗的线条和更大的箭头
+                arrow_head_length = 12  # 箭头长度
+                arrow_width = 8         # 箭头宽度
+                line_width = 6          # 引导线宽度（更粗）
+                
+                # 计算箭头头部位置（距离终点一定距离）
+                arrow_head_x = arrow_end_x - arrow_dx * 8
+                arrow_head_y = arrow_end_y - arrow_dy * 8
+                
+                # 绘制引导线主体（更粗）
+                guide_line = pg.PlotDataItem(
+                    x=[arrow_start_x, arrow_head_x],
+                    y=[arrow_start_y, arrow_head_y],
+                    pen=pg.mkPen(color=(0, 255, 0), width=line_width, alpha=0.9)  # 更粗的绿色线条
+                )
+                self.plot_widget.addItem(guide_line)
+                self.path_items_pool['lines'].append(guide_line)
+                
+                # 绘制箭头头部
+                # 计算箭头的两个侧边点
+                side_angle1 = angle_rad + np.radians(30)  # 30度侧边
+                side_angle2 = angle_rad - np.radians(30)  # -30度侧边
+                
+                side_length = arrow_head_length * 0.8
+                side1_x = arrow_head_x - side_length * np.cos(side_angle1)
+                side1_y = arrow_head_y - side_length * np.sin(side_angle1)
+                side2_x = arrow_head_x - side_length * np.cos(side_angle2)
+                side2_y = arrow_head_y - side_length * np.sin(side_angle2)
+                
+                # 绘制箭头的两个侧边
+                arrow_side1 = pg.PlotDataItem(
+                    x=[arrow_head_x, side1_x],
+                    y=[arrow_head_y, side1_y],
+                    pen=pg.mkPen(color=(0, 255, 0), width=arrow_width, alpha=0.9)
+                )
+                self.plot_widget.addItem(arrow_side1)
+                self.path_items_pool['lines'].append(arrow_side1)
+                
+                arrow_side2 = pg.PlotDataItem(
+                    x=[arrow_head_x, side2_x],
+                    y=[arrow_head_y, side2_y],
+                    pen=pg.mkPen(color=(0, 255, 0), width=arrow_width, alpha=0.9)
+                )
+                self.plot_widget.addItem(arrow_side2)
+                self.path_items_pool['lines'].append(arrow_side2)
     
     def _render_progress_info_optimized(self):
         """渲染进度信息 - 优化版"""

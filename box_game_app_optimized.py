@@ -240,9 +240,10 @@ class BoxGameCoreOptimized(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pressure_threshold = 0.001  # 降低压力阈值，从0.001改为0.0005
-        self.sliding_threshold = 0.08 
-        self.contact_area_threshold = 3  # 降低接触面积阈值，从3改为1
+        # 🔧 优化垂直按压检测参数
+        self.pressure_threshold = 0.002  # 提高压力阈值，减少误判
+        self.sliding_threshold = 0.03   # 降低滑动阈值，更敏感地检测微小移动
+        self.contact_area_threshold = 5  # 提高接触面积阈值，确保有效接触
         self.tangential_analyzer = None
         self.setup_analyzers()
         self.data_bridge = None
@@ -264,15 +265,21 @@ class BoxGameCoreOptimized(QObject):
         self.consensus_history = deque(maxlen=10)
         self.confidence_history = deque(maxlen=10)
         self.analysis_frame_count = 0
-        self.gradient_threshold = 5e-4  # 提高梯度阈值，从1e-4增加到5e-4，减少噪声影响
+        self.gradient_threshold = 2e-4  # 降低梯度阈值，更敏感地检测压力变化
         
         # 🆕 新增IDLE检测开关
-        self.enable_idle_detection = False
+        self.enable_idle_detection = True  # 启用垂直按压判断逻辑
         
-        # 🆕 新增时间稳定性检查参数
-        self.idle_stability_frames = 3  # 需要连续3帧稳定才判定为idle
-        self.idle_stability_history = deque(maxlen=5)  # 保存最近5帧的idle状态
+        # 🆕 新增时间稳定性检查参数 - 提高稳定性要求
+        self.idle_stability_frames = 5  # 需要连续5帧稳定才判定为idle（从3增加到5）
+        self.idle_stability_history = deque(maxlen=10)  # 保存最近10帧的idle状态（从5增加到10）
         self.consecutive_idle_frames = 0  # 连续idle帧数
+        
+        # 🆕 新增垂直按压检测的精细参数
+        self.vertical_pressure_min_area = 10     # 垂直按压最小接触面积（从8增加到10）
+        self.vertical_pressure_max_area = 150    # 垂直按压最大接触面积（从200减少到150）
+        self.vertical_pressure_stability_threshold = 0.03  # 垂直按压稳定性阈值（从0.02减少到0.015）
+        self.vertical_pressure_gradient_threshold = 3e-4    # 垂直按压梯度阈值（从1e-4减少到5e-5）
         
         # 🎮 集成智能控制系统
         self.smart_control = SmartControlSystem()
@@ -319,13 +326,14 @@ class BoxGameCoreOptimized(QObject):
 
     # 🆕 新增idle状态分析函数
     def analyze_idle_factors(self, pressure_data, is_sliding, is_tangential, current_cop, previous_cop=None):
-        """分析导致idle状态的具体因素"""
+        """分析导致idle状态的具体因素 - 增强版垂直按压检测"""
         idle_analysis = {
             'is_idle': False,
             'factors': {},
             'thresholds': {},
             'values': {},
-            'reasons': []
+            'reasons': [],
+            'vertical_pressure_score': 0.0  # 🆕 新增垂直按压评分
         }
         
         # 设置阈值
@@ -333,7 +341,11 @@ class BoxGameCoreOptimized(QObject):
             'pressure_threshold': self.pressure_threshold,
             'contact_area_threshold': self.contact_area_threshold,
             'sliding_threshold': self.sliding_threshold,
-            'gradient_threshold': self.gradient_threshold
+            'gradient_threshold': self.gradient_threshold,
+            'vertical_pressure_min_area': self.vertical_pressure_min_area,
+            'vertical_pressure_max_area': self.vertical_pressure_max_area,
+            'vertical_pressure_stability_threshold': self.vertical_pressure_stability_threshold,
+            'vertical_pressure_gradient_threshold': self.vertical_pressure_gradient_threshold
         }
         
         # 检查接触检测
@@ -345,32 +357,80 @@ class BoxGameCoreOptimized(QObject):
             idle_analysis['values']['max_pressure'] = max_pressure
             idle_analysis['values']['contact_area'] = contact_area
             
-            # 检查压力阈值
+            # 🔧 改进的压力阈值检查
             if max_pressure < self.pressure_threshold:
                 idle_analysis['factors']['pressure_too_low'] = True
                 idle_analysis['reasons'].append(f"压力过低: {max_pressure:.4f} < {self.pressure_threshold}")
             else:
                 idle_analysis['factors']['pressure_too_low'] = False
             
-            # 检查接触面积
-            if contact_area < self.contact_area_threshold:
+            # 🔧 改进的接触面积检查 - 垂直按压专用
+            if contact_area < self.vertical_pressure_min_area:
                 idle_analysis['factors']['area_too_small'] = True
-                idle_analysis['reasons'].append(f"接触面积过小: {contact_area} < {self.contact_area_threshold}")
+                idle_analysis['reasons'].append(f"接触面积过小: {contact_area} < {self.vertical_pressure_min_area}")
+            elif contact_area > self.vertical_pressure_max_area:
+                idle_analysis['factors']['area_too_large'] = True
+                idle_analysis['reasons'].append(f"接触面积过大: {contact_area} > {self.vertical_pressure_max_area}")
             else:
                 idle_analysis['factors']['area_too_small'] = False
+                idle_analysis['factors']['area_too_large'] = False
             
-            # 计算压力梯度
+            # 🔧 改进的压力梯度分析
             grad_x, grad_y = np.gradient(pressure_data)
             grad_magnitude = np.sqrt(grad_x**2 + grad_y**2)
             grad_mean = np.mean(grad_magnitude)
+            grad_std = np.std(grad_magnitude)  # 🆕 新增梯度标准差
             idle_analysis['values']['gradient_mean'] = grad_mean
+            idle_analysis['values']['gradient_std'] = grad_std
             
-            # 检查梯度阈值
-            if grad_mean >= self.gradient_threshold:
+            # 使用更严格的梯度阈值
+            if grad_mean >= self.vertical_pressure_gradient_threshold:
                 idle_analysis['factors']['gradient_too_high'] = True
-                idle_analysis['reasons'].append(f"压力梯度过高: {grad_mean:.6f} >= {self.gradient_threshold}")
+                idle_analysis['reasons'].append(f"压力梯度过高: {grad_mean:.6f} >= {self.vertical_pressure_gradient_threshold}")
             else:
                 idle_analysis['factors']['gradient_too_high'] = False
+            
+            # 🆕 新增压力分布均匀性检查
+            if contact_area > 0:
+                # 计算压力分布的均匀性
+                contact_pressures = pressure_data[contact_mask]
+                pressure_variance = np.var(contact_pressures)
+                pressure_coefficient = pressure_variance / (np.mean(contact_pressures) + 1e-8)
+                
+                idle_analysis['values']['pressure_variance'] = pressure_variance
+                idle_analysis['values']['pressure_coefficient'] = pressure_coefficient
+                
+                # 如果压力分布不均匀，可能不是垂直按压
+                if pressure_coefficient > 0.3:  # 降低阈值，更严格（从0.5降低到0.3）
+                    idle_analysis['factors']['pressure_uneven'] = True
+                    idle_analysis['reasons'].append(f"压力分布不均匀: {pressure_coefficient:.3f} > 0.3")
+                else:
+                    idle_analysis['factors']['pressure_uneven'] = False
+                
+                # 🆕 新增压力中心偏移检查
+                if contact_area > 0:
+                    # 计算压力中心
+                    y_indices, x_indices = np.where(contact_mask)
+                    weights = pressure_data[contact_mask]
+                    center_x = np.average(x_indices, weights=weights)
+                    center_y = np.average(y_indices, weights=weights)
+                    
+                    # 检查压力中心是否偏离几何中心
+                    geometric_center_x = pressure_data.shape[1] / 2
+                    geometric_center_y = pressure_data.shape[0] / 2
+                    center_offset = np.sqrt(
+                        (center_x - geometric_center_x)**2 + 
+                        (center_y - geometric_center_y)**2
+                    )
+                    
+                    idle_analysis['values']['pressure_center_offset'] = center_offset
+                    
+                    # 如果压力中心明显偏离，可能表示有切向力
+                    if center_offset > 3:  # 降低阈值，更严格（从5降低到3）
+                        idle_analysis['factors']['pressure_center_offset'] = True
+                        idle_analysis['reasons'].append(f"压力中心偏移: {center_offset:.2f} > 3")
+                    else:
+                        idle_analysis['factors']['pressure_center_offset'] = False
         else:
             idle_analysis['factors']['no_pressure_data'] = True
             idle_analysis['reasons'].append("无压力数据")
@@ -385,7 +445,7 @@ class BoxGameCoreOptimized(QObject):
         if is_tangential:
             idle_analysis['reasons'].append("检测到切向力")
         
-        # 检查COP位移
+        # 🔧 改进的COP位移检测
         if previous_cop is not None and current_cop is not None:
             displacement = np.sqrt(
                 (current_cop[0] - previous_cop[0])**2 + 
@@ -393,23 +453,45 @@ class BoxGameCoreOptimized(QObject):
             )
             idle_analysis['values']['cop_displacement'] = displacement
             
-            if displacement > self.sliding_threshold:
+            # 使用更严格的位移阈值
+            if displacement > self.vertical_pressure_stability_threshold:
                 idle_analysis['factors']['cop_displacement_too_large'] = True
-                idle_analysis['reasons'].append(f"COP位移过大: {displacement:.3f} > {self.sliding_threshold}")
+                idle_analysis['reasons'].append(f"COP位移过大: {displacement:.3f} > {self.vertical_pressure_stability_threshold}")
             else:
                 idle_analysis['factors']['cop_displacement_too_large'] = False
         else:
             idle_analysis['values']['cop_displacement'] = 0.0
             idle_analysis['factors']['cop_displacement_too_large'] = False
         
-        # 判断是否为idle状态
+        # 🆕 计算垂直按压评分 (0-100)
+        vertical_pressure_score = 100.0
+        
+        # 根据各项因素扣分
+        if idle_analysis['factors'].get('pressure_too_low', False):
+            vertical_pressure_score -= 30
+        if idle_analysis['factors'].get('area_too_small', False):
+            vertical_pressure_score -= 20
+        if idle_analysis['factors'].get('area_too_large', False):
+            vertical_pressure_score -= 15
+        if idle_analysis['factors'].get('gradient_too_high', False):
+            vertical_pressure_score -= 25
+        if idle_analysis['factors'].get('pressure_uneven', False):
+            vertical_pressure_score -= 20  # 增加扣分（从15增加到20）
+        if idle_analysis['factors'].get('pressure_center_offset', False):
+            vertical_pressure_score -= 15  # 新增扣分项
+        if idle_analysis['factors'].get('is_sliding', False):
+            vertical_pressure_score -= 40
+        if idle_analysis['factors'].get('is_tangential', False):
+            vertical_pressure_score -= 35
+        if idle_analysis['factors'].get('cop_displacement_too_large', False):
+            vertical_pressure_score -= 30
+        
+        vertical_pressure_score = max(0.0, vertical_pressure_score)
+        idle_analysis['vertical_pressure_score'] = vertical_pressure_score
+        
+        # 🔧 改进的idle状态判断 - 基于评分
         is_idle = (
-            not idle_analysis['factors'].get('pressure_too_low', False) and
-            not idle_analysis['factors'].get('area_too_small', False) and
-            not idle_analysis['factors'].get('gradient_too_high', False) and
-            not idle_analysis['factors'].get('is_sliding', False) and
-            not idle_analysis['factors'].get('is_tangential', False) and
-            not idle_analysis['factors'].get('cop_displacement_too_large', False) and
+            vertical_pressure_score >= 75.0 and  # 🆕 提高评分阈值（从70增加到75）
             not idle_analysis['factors'].get('no_pressure_data', False)
         )
         
@@ -430,16 +512,16 @@ class BoxGameCoreOptimized(QObject):
         idle_analysis['stability_threshold'] = self.idle_stability_frames
         
         if final_is_idle:
-            idle_analysis['reasons'].append(f"连续{self.consecutive_idle_frames}帧稳定，判定为idle状态")
+            idle_analysis['reasons'].append(f"✅ 垂直按压检测成功: 评分={vertical_pressure_score:.1f}, 连续{self.consecutive_idle_frames}帧稳定")
         elif is_idle:
-            idle_analysis['reasons'].append(f"当前帧满足idle条件，但需要连续{self.idle_stability_frames}帧稳定")
+            idle_analysis['reasons'].append(f"🔄 当前帧满足条件: 评分={vertical_pressure_score:.1f}, 需要连续{self.idle_stability_frames}帧稳定")
         else:
-            idle_analysis['reasons'].append("当前帧不满足idle条件")
+            idle_analysis['reasons'].append(f"❌ 不满足垂直按压条件: 评分={vertical_pressure_score:.1f}")
         
         # 🐛 调试输出：IDLE分析结果
-        print(f"🔍 IDLE分析: 状态={'✅ Idle' if final_is_idle else '❌ 非Idle'}, 连续帧={self.consecutive_idle_frames}/{self.idle_stability_frames}, 原因数量={len(idle_analysis['reasons'])}")
+        print(f"🔍 垂直按压分析: 状态={'✅ 垂直按压' if final_is_idle else '❌ 非垂直按压'}, 评分={vertical_pressure_score:.1f}, 连续帧={self.consecutive_idle_frames}/{self.idle_stability_frames}")
         if idle_analysis['reasons']:
-            print(f"   原因: {idle_analysis['reasons'][:2]}...")  # 只显示前2个原因
+            print(f"   原因: {idle_analysis['reasons'][-1]}")  # 只显示最后一个原因
         
         return idle_analysis
 
@@ -536,7 +618,7 @@ class BoxGameCoreOptimized(QObject):
             return None
 
     def detect_contact(self, pressure_data):
-        """检测接触状态 - 改进版，支持更灵活的阈值调整"""
+        """检测接触状态 - 改进版，支持更灵活的阈值调整和垂直按压检测"""
         if pressure_data is None or pressure_data.size == 0:
             return False
         
@@ -544,7 +626,7 @@ class BoxGameCoreOptimized(QObject):
         max_pressure = np.max(pressure_data)
         mean_pressure = np.mean(pressure_data)
         
-        # 检查压力阈值
+        # 🔧 改进的压力阈值检查
         if max_pressure < self.pressure_threshold:
             # 🐛 调试输出：压力过低
             if max_pressure > 0.001:  # 只在有一定压力时输出，避免过多日志
@@ -555,10 +637,15 @@ class BoxGameCoreOptimized(QObject):
         contact_mask = pressure_data > self.pressure_threshold
         contact_area = np.sum(contact_mask)
         
-        # 检查接触面积
+        # 🔧 改进的接触面积检查 - 使用垂直按压专用阈值
         if contact_area < self.contact_area_threshold:
             # 🐛 调试输出：接触面积过小
             print(f"🔍 接触检测: 面积过小 - 接触面积={contact_area}, 阈值={self.contact_area_threshold}")
+            return False
+        
+        # 🆕 新增接触面积上限检查
+        if contact_area > self.vertical_pressure_max_area:
+            print(f"🔍 接触检测: 面积过大 - 接触面积={contact_area}, 上限={self.vertical_pressure_max_area}")
             return False
         
         # 🐛 调试输出：接触检测成功
@@ -582,18 +669,23 @@ class BoxGameCoreOptimized(QObject):
         return (cop_x, cop_y)
 
     def detect_sliding(self, current_cop):
+        """检测滑动状态 - 改进版，更精确的滑动检测"""
         if current_cop is None:
             return False, 0.0
         if self.initial_cop is None:
             self.initial_cop = current_cop
             return False, 0.0
+        
+        # 计算COP位移
         dx = current_cop[0] - self.initial_cop[0]
         dy = current_cop[1] - self.initial_cop[1]
         movement_distance = np.sqrt(dx*dx + dy*dy)
+        
+        # 🔧 改进的滑动检测 - 使用更严格的阈值
         is_sliding = movement_distance > self.sliding_threshold
         
         # 🐛 调试输出：滑动检测信息
-        if movement_distance > 0.01:  # 只在有移动时输出
+        if movement_distance > 0.005:  # 只在有显著移动时输出
             print(f"🖱️ 滑动检测: 距离={movement_distance:.3f}, 阈值={self.sliding_threshold:.3f}, 是否滑动={is_sliding}")
             print(f"   COP: 初始=({self.initial_cop[0]:.2f}, {self.initial_cop[1]:.2f}), 当前=({current_cop[0]:.2f}, {current_cop[1]:.2f})")
         
@@ -812,6 +904,47 @@ class BoxGameCoreOptimized(QObject):
             self.smart_control.update_parameters(params)
 
         print(f"🎮 游戏参数已更新: {list(params.keys())}")
+
+    def set_vertical_pressure_detection_params(self, params):
+        """设置垂直按压检测的专用参数"""
+        if 'vertical_pressure_min_area' in params:
+            self.vertical_pressure_min_area = params['vertical_pressure_min_area']
+            print(f"🔍 垂直按压最小面积阈值: {self.vertical_pressure_min_area}")
+        
+        if 'vertical_pressure_max_area' in params:
+            self.vertical_pressure_max_area = params['vertical_pressure_max_area']
+            print(f"🔍 垂直按压最大面积阈值: {self.vertical_pressure_max_area}")
+        
+        if 'vertical_pressure_stability_threshold' in params:
+            self.vertical_pressure_stability_threshold = params['vertical_pressure_stability_threshold']
+            print(f"🔍 垂直按压稳定性阈值: {self.vertical_pressure_stability_threshold}")
+        
+        if 'vertical_pressure_gradient_threshold' in params:
+            self.vertical_pressure_gradient_threshold = params['vertical_pressure_gradient_threshold']
+            print(f"🔍 垂直按压梯度阈值: {self.vertical_pressure_gradient_threshold}")
+        
+        if 'idle_stability_frames' in params:
+            self.idle_stability_frames = params['idle_stability_frames']
+            print(f"🔍 垂直按压稳定性帧数: {self.idle_stability_frames}")
+        
+        # 输出当前垂直按压检测配置
+        print(f"🔍 当前垂直按压检测配置:")
+        print(f"   最小面积: {self.vertical_pressure_min_area}")
+        print(f"   最大面积: {self.vertical_pressure_max_area}")
+        print(f"   稳定性阈值: {self.vertical_pressure_stability_threshold}")
+        print(f"   梯度阈值: {self.vertical_pressure_gradient_threshold}")
+        print(f"   稳定性帧数: {self.idle_stability_frames}")
+
+    def get_vertical_pressure_detection_info(self):
+        """获取垂直按压检测的详细信息"""
+        return {
+            'vertical_pressure_min_area': self.vertical_pressure_min_area,
+            'vertical_pressure_max_area': self.vertical_pressure_max_area,
+            'vertical_pressure_stability_threshold': self.vertical_pressure_stability_threshold,
+            'vertical_pressure_gradient_threshold': self.vertical_pressure_gradient_threshold,
+            'idle_stability_frames': self.idle_stability_frames,
+            'enable_idle_detection': self.enable_idle_detection
+        }
 
     def set_contact_detection_thresholds(self, pressure_threshold=None, contact_area_threshold=None):
         """设置接触检测阈值 - 专门用于调整接触检测灵敏度"""
@@ -1097,7 +1230,7 @@ class BoxGameMainWindow(QMainWindow):
         # 设置布局比例 - 控制面板占20%，渲染器占80%
         main_layout.setStretch(0, 1)  # 控制面板
         main_layout.setStretch(1, 0)  # 分隔线（不拉伸）
-        main_layout.setStretch(2, 4)  # 渲染器
+        main_layout.setStretch(2, 6)  # 渲染器
         
     def init_components(self):
         """初始化游戏组件"""
@@ -1515,9 +1648,9 @@ class BoxGameMainWindow(QMainWindow):
             
             # 更新渲染器参数
             if self.renderer:
-                # 处理可视化相关参数
+                # 处理可视化相关参数 - 删除轨迹显示选项
                 vis_params = {k: v for k, v in params.items() 
-                            if k in ['show_trajectory', 'show_analysis_details', 'show_pressure_overlay']}
+                            if k in ['show_analysis_details', 'show_pressure_overlay']}
                 if vis_params:
                     self.renderer.set_visualization_options(vis_params)
             
