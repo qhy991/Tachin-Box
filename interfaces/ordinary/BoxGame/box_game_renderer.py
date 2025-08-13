@@ -293,7 +293,7 @@ class BoxGameRenderer(QWidget):
         )
         
         # 🎨 设置2D热力图平滑参数
-        self.set_2d_smoothing_options(gaussian_sigma=0.0)
+        self.set_2d_smoothing_options(gaussian_sigma=1.0)
         
         # 🎨 设置轨迹平滑参数
         self.set_trajectory_smoothing_options(window_size=5, sigma=1.0)

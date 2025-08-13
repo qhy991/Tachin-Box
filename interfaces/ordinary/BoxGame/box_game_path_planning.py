@@ -230,18 +230,32 @@ class PathPlanner:
         precision_path.add_point(32, 32, "target")
         self.available_paths["精确挑战"] = precision_path
         
-        # 🤖 AI字母路径 - 优化版本，只连接关键点
-        ai_path = GamePath("AI字母")
-        # A字母 - 只连接关键点
-        ai_path.add_point(15, 10, "start")  # A的左底部
-        ai_path.add_point(20, 20, "waypoint")  # A的顶部
-        ai_path.add_point(25, 10, "waypoint")  # A的右底部
-        ai_path.add_point(20, 15, "waypoint")  # A的横线中点
-        # I字母 - 只连接关键点
-        ai_path.add_point(30, 10, "waypoint")  # I的底部
-        ai_path.add_point(30, 20, "waypoint")  # I的顶部
-        ai_path.add_point(30, 10, "target")  # 回到I的底部
-        self.available_paths["AI字母"] = ai_path
+        # 🤖 AI字母路径 - 参考TACHIN绘制方法，每个字母独立绘制
+        ai_path = GamePath("AI智能路径")
+        
+        # 字母宽度：6单位，高度：40单位，间距：2单位，确保在64x64范围内
+        
+        # A字母 - 两条斜线+横线
+        ai_path.add_point(8, 48, "start", "solid")  # A的左底部
+        ai_path.add_point(11, 8, "waypoint", "solid")  # A的顶部
+        ai_path.add_point(14, 48, "waypoint", "solid")  # A的右底部
+        ai_path.add_point(12, 28, "waypoint", "solid")  # A的横线右端
+        ai_path.add_point(10, 28, "waypoint", "solid")  # A的横线左端
+        
+        # 断开连接 - 不连接到I字母
+        ai_path.add_point(22, 28, "waypoint", "none")  # 断开点
+        
+        # I字母 - 顶部横线+竖线+底部横线
+        ai_path.add_point(22, 8, "waypoint", "solid")  # I的顶部左端
+        ai_path.add_point(26, 8, "waypoint", "solid")  # I的顶部右端
+        ai_path.add_point(24, 8, "waypoint", "solid")  # I的顶部中点
+        ai_path.add_point(24, 48, "waypoint", "solid")  # I的底部中点
+        ai_path.add_point(22, 48, "waypoint", "solid")  # I的底部左端
+        
+        # 最终目标点
+        ai_path.add_point(26, 48, "target", "solid")  # 中心目标点
+        
+        self.available_paths["AI智能路径"] = ai_path
         
         # 🎯 TACHIN字母路径 - 基于simple_test.py参考，简洁清晰的独立字母设计
         tachin_path = GamePath("TACHIN字母")

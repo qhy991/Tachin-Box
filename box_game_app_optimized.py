@@ -1097,7 +1097,7 @@ class BoxGameMainWindow(QMainWindow):
         # 设置布局比例 - 控制面板占20%，渲染器占80%
         main_layout.setStretch(0, 1)  # 控制面板
         main_layout.setStretch(1, 0)  # 分隔线（不拉伸）
-        main_layout.setStretch(2, 4)  # 渲染器
+        main_layout.setStretch(2, 6)  # 渲染器
         
     def init_components(self):
         """初始化游戏组件"""
